@@ -1,69 +1,62 @@
 # 🍽 切角點單機（Angle Radar）
 
-給影音創作者的「切角發想」工具。輸入一個想拍的方向（例：口紅、增肌飲食），
-自動掃描國內外 YouTube 爆款、拆解參考影片，直接給你**可拍的切角**：拍什麼主題、
-用什麼呈現方式、為什麼這樣會吸引人，每張卡片附國外爆款證據與中文市場紅綠燈。
+給影音創作者的內容企劃工具。使用者先確認受眾、目的、形式與限制，再取得一份可以直接開拍的切角菜單。每張企劃卡包含開場、呈現方式、參考來源、差異化做法與優先順序。
 
-## 管線（全自動，約 2–5 分鐘）
+一般使用者只會看到需求確認、簡化進度與最終成果；研究診斷、模型用量與中間資料只對管理者顯示。
 
-1. AI 解析方向 → 生成中英種子字（英文為國外創作者圈道地用語）
-2. 迭代探勘關鍵字：autocomplete 擴充 → AI 挑方向續挖（含爬取上限）
-3. AI 自動選字（國外為找 reference 主戰場）
-4. 雙市場搜尋（美國＋台灣）
-5. 爆款偵測：觀看數 ÷ 頻道平均 = 爆款倍率
-6. 影片拆解：真字幕＋留言；深度模式改用 Gemini 原生影片理解
-7. 出菜單：卡片式切角（拍什麼／怎麼呈現／為什麼吸引人＋證據／蹭它／超越它／中文市場紅綠燈）
+## 主要功能
+
+- 結構化需求摘要，避免只靠一個模糊關鍵字開始分析
+- 一般模式使用字幕、留言與公開資料，產出帶來源的企劃卡
+- 分開標示「已熱門」與「正在竄起」，並對早期訊號標示可信度
+- 需求旁提供一份可複製的通用 AI Prompt，方便使用者自行比較
+- 報告後可回覆 Angle Radar 與一般 AI 哪份較有用
+- 一般下載檔只包含企劃成果與引用來源
+- 管理者可查看 token、推估成本、樣本品質與診斷資料
+- 相同公開資料與影片分析具備快取，減少重複成本
 
 ## 本機執行
 
 ```bash
 pip install -r requirements.txt
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml   # 填入你的 key
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml
 streamlit run app.py
 ```
 
-需要兩把金鑰：
-- **Gemini API Key** — https://aistudio.google.com
-- **YouTube Data API Key** — Google Cloud Console 啟用 YouTube Data API v3
+需要：
 
-沒設 secrets 時，也可在側邊欄手動填 key。
+- Gemini API Key：<https://aistudio.google.com>
+- YouTube Data API Key：Google Cloud Console 啟用 YouTube Data API v3
 
-## 部署給朋友測試（Streamlit Community Cloud，免費）
+## Streamlit Community Cloud 部署
 
-1. 這個 repo 推到 GitHub（public 即可）
-2. 到 https://share.streamlit.io → New app → 選這個 repo、`app.py`
-3. 在 **App settings → Secrets** 貼上 `secrets.toml.example` 的內容並填實際值
-   （金鑰只存在 Streamlit Cloud 的 Secrets，**不會**進 repo）
-4. 部署後把網址＋試用碼發給朋友
+1. 將 repo 連接至 Streamlit Community Cloud。
+2. App entry point 選擇 `app.py`。
+3. 在 App settings → Secrets 填入 `.streamlit/secrets.toml.example` 的設定。
+4. 啟用白名單後，再將 app 網址和個別試用碼交給測試者。
 
-> ⚠️ 部署後是**你的金鑰在付費**，任何拿到網址的人都能燒你的額度——所以務必啟用下方白名單。
+API 金鑰只應放在 Streamlit Secrets，不能提交進 GitHub。
+公開部署請勿開啟 `SHOW_ADMIN_DIAGNOSTICS`；本機需要診斷時才設為 `true`。
 
-## 白名單（剩餘次數倒扣，用 Apps Script 記帳）
+## 白名單與試用次數
 
-每個朋友一組 `code`（試用碼）＋一個 `remaining`（剩餘次數）。每成功出一份菜單，Apps Script
-把 `remaining` 扣 1，扣到 0 就不能用；要加值就把數字改大。Sheet 保持私有，免服務帳號金鑰。
+白名單由私有 Google Sheet 與 Apps Script 管理。Sheet 欄位：
 
-Sheet 第一列表頭（順序不拘，靠欄名比對）：
-
-| 欄 | 意義 |
+| 欄位 | 用途 |
 |---|---|
-| `code` | 試用碼（**每人一組不同的碼**，登入用，也是記帳 key） |
-| `name` | 暱稱（登入打招呼用） |
-| `remaining` | 剩餘次數；每成功點單扣 1，`0`＝不能用；加值＝改大數字 |
-| `deep_mode` | `FALSE` 關閉這人的「深度拆解」（貴功能）；空白＝允許 |
+| `code` | 每位測試者不同的試用碼 |
+| `name` | 顯示名稱 |
+| `remaining` | 剩餘產出次數 |
+| `deep_mode` | `FALSE` 時不開放管理者的額外畫面檢查 |
 
-> 朋友怎麼被辨認：他輸入你發的 `code` → app 呼叫 Apps Script 比對 Sheet → 這組碼就是他的身分＋扣次數的 key。**所以每人要給不同的碼**。登入後側邊欄顯示「剩餘次數」，跑失敗會自動退還不白扣。
+設定方式見 [whitelist_gas/SETUP.md](whitelist_gas/SETUP.md)。比較回饋會寫入同一份試算表的 `feedback` 分頁。
 
-**設定步驟見 [whitelist_gas/SETUP.md](whitelist_gas/SETUP.md)**：把 GAS 貼進白名單 Sheet 的 Apps Script → 部署成 Web App → 網址與密鑰填進 secrets 的 `WHITELIST_API_URL` / `WHITELIST_API_KEY`。加值直接在 Sheet 改 `remaining` 數字即可，即時生效。
+## 成本
 
-> 兩行都沒設時閘門不啟用（本機自用直接進）。
+一般模式的實際價格會依字幕長度與模型 thinking tokens 浮動。管理者完成每次分析後，可以在診斷區看到該次實際 token 與依目前價格表推估的成本；該數字不會顯示給一般測試者。
 
-## 成本與配額（參考）
+## 隱私與公開原始碼提醒
 
-- 單次點單：Gemini 約 NT$1–3（深度模式看片較高）；YouTube 配額約 820 units（免費額度 10,000/天 ≈ 12 次全站共用）
-- 多人測試易撞 YouTube 每日配額——可向 Google 申請提額，並用白名單控管人數
-
-## 隱私與安全
-
-- `secrets.toml` 已被 `.gitignore` 排除，金鑰不會進這個 public repo
-- 白名單 Sheet 只放試用碼與暱稱，別放個資
+- `.streamlit/secrets.toml`、`.env` 與 key 檔已被 `.gitignore` 排除。
+- 白名單請勿放入不必要的個資。
+- 隱藏 app 畫面中的流程不等於保護原始碼；只要 repo 是 public，程式實作仍可被閱讀。若未來要保護核心方法，應改用 private repo 或將核心分析移至不公開的後端服務。
