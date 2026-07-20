@@ -845,56 +845,134 @@ def _secret(name):
         return ""
 
 
-# ── Google Sheet 白名單閘門 ──
-# secrets 設了 WHITELIST_SHEET_ID 才啟用；本機自用沒設就直接進。
-# 該 Google Sheet 需設「知道連結的人皆可檢視」，欄位（第一列表頭）：
-#   code | name | active     （active 填 TRUE/FALSE，空白視為 TRUE）
-@st.cache_data(ttl=180, show_spinner=False)
-def _load_whitelist(sheet_id, gid):
+# ══════════════════════════════════════════════════════════
+# Google Sheet 白名單（控管：誰能用｜每人每日幾次｜深度功能開不開）
+#
+# 兩種模式：
+#   FULL（有設 [gcp_service_account]）：可讀可寫 → 真的記錄用量、能限次
+#   LITE（只設 WHITELIST_SHEET_ID）：唯讀 CSV → 功能開關可用，限次只在單一 session 內軟性計數
+#
+# 白名單分頁欄位（第一列表頭）：code | name | active | daily_limit | deep_mode
+#   active：FALSE 停用（空白＝啟用）
+#   daily_limit：每日次數上限（空白或 0＝不限）
+#   deep_mode：FALSE 關閉該用戶的深度拆解（空白＝允許）
+# FULL 模式會自動用一個 usage 分頁記錄每次點單。
+# ══════════════════════════════════════════════════════════
+def _secret_table(name):
+    try:
+        t = st.secrets.get(name, None)
+        return dict(t) if t else None
+    except Exception:
+        return None
+
+def _wl_mode():
+    if _secret_table("gcp_service_account") and _secret("WHITELIST_SHEET_ID"):
+        return "full"
+    if _secret("WHITELIST_SHEET_ID"):
+        return "lite"
+    return "off"
+
+@st.cache_resource(show_spinner=False)
+def _gs_book():
+    import gspread
+    from google.oauth2.service_account import Credentials
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]),
+        scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    return gspread.authorize(creds).open_by_key(_secret("WHITELIST_SHEET_ID"))
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _wl_rows_lite(sheet_id, gid):
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
     df = pd.read_csv(url, dtype=str).fillna("")
-    df.columns = [c.strip().lower() for c in df.columns]
-    return df
+    return df.to_dict("records")
 
-def _check_code(code):
-    sid = _secret("WHITELIST_SHEET_ID")
-    if not sid:
-        return True, ""  # 未設白名單 → 開放（本機自用）
-    gid = _secret("WHITELIST_SHEET_GID") or "0"
+def _wl_rows():
+    if _wl_mode() == "full":
+        return _gs_book().sheet1.get_all_records()
+    return _wl_rows_lite(_secret("WHITELIST_SHEET_ID"), _secret("WHITELIST_SHEET_GID") or "0")
+
+def _wl_lookup(code):
+    """回 {ok, name, daily_limit, deep, msg}"""
+    if _wl_mode() == "off":
+        return {"ok": True, "name": "", "daily_limit": 0, "deep": True}
     try:
-        df = _load_whitelist(sid, gid)
+        rows = _wl_rows()
     except Exception:
-        return False, "白名單讀取失敗，請稍後再試或聯絡站主"
-    if "code" not in df.columns:
-        return False, "白名單格式錯誤（第一列需有 code 欄）"
-    row = df[df["code"].str.strip() == code.strip()]
-    if row.empty:
-        return False, "通行碼不在名單中，跟站主索取試用碼 🙏"
-    active = str(row.iloc[0].get("active", "TRUE")).strip().upper()
-    if active in ("FALSE", "0", "NO", "N"):
-        return False, "此通行碼已停用"
-    return True, row.iloc[0].get("name", "")
+        return {"ok": False, "msg": "白名單讀取失敗，請聯絡站主"}
+    code = code.strip()
+    for r in rows:
+        rl = {str(k).strip().lower(): str(v).strip() for k, v in r.items()}
+        if rl.get("code", "") == code:
+            if str(rl.get("active", "TRUE")).upper() in ("FALSE", "0", "NO", "N"):
+                return {"ok": False, "msg": "此通行碼已停用"}
+            try:
+                limit = int(float(rl.get("daily_limit", "") or 0))
+            except Exception:
+                limit = 0
+            # deep：只有明確填 FALSE 才關閉；沒有這欄或空白＝允許
+            deep = str(rl.get("deep_mode", "")).strip().upper() not in ("FALSE", "0", "NO", "N")
+            return {"ok": True, "name": rl.get("name", ""), "daily_limit": limit, "deep": deep}
+    return {"ok": False, "msg": "通行碼不在名單中，跟站主索取試用碼 🙏"}
 
-if _secret("WHITELIST_SHEET_ID") and not st.session_state.get("_wl_ok"):
+def _wl_used_today(code):
+    if _wl_mode() != "full":
+        return st.session_state.get("_wl_used", 0)
+    try:
+        book = _gs_book()
+        try:
+            ws = book.worksheet("usage")
+        except Exception:
+            return 0
+        today = datetime.now().strftime("%Y-%m-%d")
+        return sum(1 for row in ws.get_all_values()[1:]
+                   if len(row) >= 2 and row[0] == today and str(row[1]).strip() == code)
+    except Exception:
+        return 0
+
+def _wl_record(code, name):
+    st.session_state["_wl_used"] = st.session_state.get("_wl_used", 0) + 1
+    if _wl_mode() != "full":
+        return
+    try:
+        book = _gs_book()
+        try:
+            ws = book.worksheet("usage")
+        except Exception:
+            ws = book.add_worksheet("usage", rows=2000, cols=4)
+            ws.append_row(["date", "code", "name", "timestamp"])
+        now = datetime.now()
+        ws.append_row([now.strftime("%Y-%m-%d"), code, name, now.strftime("%Y-%m-%d %H:%M:%S")])
+    except Exception:
+        pass
+
+if _wl_mode() != "off" and not st.session_state.get("_wl_ok"):
     st.subheader("🔑 測試通行")
     st.caption("這是邀請制的內測，請輸入站主給你的試用碼")
     _code = st.text_input("試用碼", label_visibility="collapsed", placeholder="輸入試用碼")
     if st.button("進入", type="primary"):
-        ok, msg = _check_code(_code)
-        if ok:
-            st.session_state["_wl_ok"] = True
-            st.session_state["_wl_name"] = msg
+        info = _wl_lookup(_code)
+        if info["ok"]:
+            st.session_state.update({
+                "_wl_ok": True, "_wl_code": _code.strip(), "_wl_name": info["name"],
+                "_wl_limit": info["daily_limit"], "_wl_deep": info["deep"],
+            })
             st.rerun()
         else:
-            st.error(msg)
+            st.error(info.get("msg", "通行碼無效"))
     st.stop()
 
 # 金鑰：站主已在 secrets 設定就直接用（部署給朋友時，朋友看不到也不用填）；
 # 否則（本機自用）在側邊欄手動填。
 _has_secret_keys = bool(_secret("GEMINI_API_KEY") and _secret("YOUTUBE_API_KEY"))
 with st.sidebar:
-    if st.session_state.get("_wl_name"):
-        st.success(f"歡迎，{st.session_state['_wl_name']} 👋")
+    if st.session_state.get("_wl_ok"):
+        _nm = st.session_state.get("_wl_name") or "測試用戶"
+        st.success(f"歡迎，{_nm} 👋")
+        _lim = st.session_state.get("_wl_limit", 0)
+        st.caption(f"今日點單上限：{_lim} 次" if _lim else "今日點單：不限次")
+        if not st.session_state.get("_wl_deep", True):
+            st.caption("🎥 深度拆解未對你開放")
     st.header("🔑 API 金鑰")
     if _has_secret_keys:
         GEMINI_API_KEY = _secret("GEMINI_API_KEY")
@@ -924,12 +1002,17 @@ with st.sidebar:
              "若你的 key 打不到新模型，退回 2.5-flash"
     )
 
+    _deep_allowed = st.session_state.get("_wl_deep", True)
     DEEP_MODE = st.toggle(
         "🎥 深度拆解（Gemini 直接看影片）",
         value=False,
-        help="開啟後 Gemini 會實際觀看影片畫面來分析 hook 與節奏，較慢、token 消耗較多；"
-             "關閉時使用真字幕＋留言分析（快速）"
+        disabled=not _deep_allowed,
+        help=("開啟後 Gemini 會實際觀看影片畫面來分析 hook 與節奏，較慢、token 消耗較多；"
+              "關閉時使用真字幕＋留言分析（快速）") if _deep_allowed
+             else "此功能未對你的帳號開放，請洽站主"
     )
+    if not _deep_allowed:
+        DEEP_MODE = False
 
     with st.expander("⚙️ 進階設定"):
         N_TOPICS = st.slider("菜單切角數", 4, 10, 6)
@@ -994,10 +1077,15 @@ with col_hint:
     st.caption("約 2-5 分鐘：AI 選字 → 掃描國內外爆款 → 拆解參考影片 → 出切角菜單")
 
 if run_clicked:
+    _limit = st.session_state.get("_wl_limit", 0)
+    _code = st.session_state.get("_wl_code", "")
+    _used = _wl_used_today(_code) if _wl_mode() != "off" else 0
     if not GEMINI_API_KEY or not YOUTUBE_API_KEY:
         st.error("請先在左側填入 Gemini 與 YouTube API Key")
     elif not direction.strip():
         st.error("請先輸入你想切入的方向")
+    elif _limit and _used >= _limit:
+        st.error(f"今天的 {_limit} 次點單已用完，明天再來 🙏")
     else:
         cfg = {
             'gemini_key': GEMINI_API_KEY, 'yt_key': YOUTUBE_API_KEY,
@@ -1013,6 +1101,7 @@ if run_clicked:
         if result:
             result['cfg'] = cfg
             st.session_state['radar_result'] = result
+            _wl_record(_code, st.session_state.get("_wl_name", ""))   # 成功才計一次用量
 
 # ---- 結果呈現（從 session_state 讀，rerun 不消失）----
 if 'radar_result' in st.session_state:
