@@ -145,6 +145,14 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("近期同頻道基準的 3.2 倍", rendered)
         self.assertIn("來源內容結論", rendered)
         self.assertIn("第一位陌生客戶的取得過程", rendered)
+        self.assertIn("這個切角從哪裡挖到", rendered)
+        self.assertIn("線索完整度", rendered)
+        self.assertIn("深化前先確認", rendered)
+        self.assertIn(
+            "以下是值得探索的內容切角，不代表已證實的市場需求。",
+            rendered,
+        )
+        self.assertNotIn("證據信心", rendered)
 
     def test_internal_route_is_downgraded_when_source_is_not_eligible(self):
         report = {

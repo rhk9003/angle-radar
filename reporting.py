@@ -540,6 +540,8 @@ def render_angle_report(
     lines = [
         f"# 「{_plain_text(topic)}」切角雷達",
         "",
+        "以下是值得探索的內容切角，不代表已證實的市場需求。",
+        "",
         _public_generated_text(report.get("radar_summary", "")),
         "",
         f"**本次找到的線索**：{coverage}",
@@ -552,7 +554,7 @@ def render_angle_report(
                 "",
                 f"**這個切角**：{_public_generated_text(angle.get('opportunity', ''))}",
                 "",
-                f"**研究結論**：{_public_generated_text(angle.get('signal', ''))}",
+                f"**這個切角從哪裡挖到**：{_public_generated_text(angle.get('signal', ''))}",
                 "",
                 f"**{_PUBLIC_ROUTE_LABEL.get(str(angle.get('internal_signal_type', 'other')), _PUBLIC_ROUTE_LABEL['other'])}**："
                 f"{_public_generated_text(angle.get('route_note', ''))}",
@@ -582,7 +584,7 @@ def render_angle_report(
         lines.extend(
             [
                 "",
-                f"**證據信心**：{CONFIDENCE_LABEL.get(angle.get('confidence'), '低')}",
+                f"**線索完整度**：{CONFIDENCE_LABEL.get(angle.get('confidence'), '低')}",
                 "",
                 f"**深化前先確認**：{_public_generated_text(angle.get('caution', ''))}",
             ]
@@ -612,7 +614,7 @@ def angle_development_prompt(
 原始主題：{_plain_text(topic)}
 這次要深化的切角：{_public_generated_text(angle.get('angle_name', ''))}
 切角說明：{_public_generated_text(angle.get('opportunity', ''))}
-研究結論：{_public_generated_text(angle.get('signal', ''))}
+這個切角從哪裡挖到：{_public_generated_text(angle.get('signal', ''))}
 建議深化重點：{_public_generated_text(angle.get('route_note', ''))}
 觀眾留下的問題：{comment_gap}
 
@@ -651,7 +653,7 @@ def render_breakdown(breakdown: dict[str, Any]) -> str:
         "**可延伸的角度**：" + "；".join(map(_plain_text, breakdown.get("reusable_angles", []))),
         "**留言缺口**："
         + ("；".join(map(_plain_text, breakdown.get("comment_gaps", []))) or "沒有足夠留言證據"),
-        f"**證據信心**：{CONFIDENCE_LABEL.get(breakdown.get('confidence'), '低')}",
+        f"**線索完整度**：{CONFIDENCE_LABEL.get(breakdown.get('confidence'), '低')}",
     ]
     return "\n\n".join(lines)
 
