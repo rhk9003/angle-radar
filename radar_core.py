@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 
-MARKET_LABEL = {"zh": "🇹🇼 中文樣本", "en": "🌍 國外樣本"}
+MARKET_LABEL = {"zh": "中文樣本", "en": "英文樣本"}
 CONFIDENCE_LABEL = {"high": "高", "medium": "中", "low": "低"}
 
 
@@ -177,6 +177,63 @@ def prefilter_keyword_pool(
         if len(selected) >= limit:
             break
     return selected
+
+
+def build_search_terms(
+    plan: dict[str, list[str]],
+    zh_pool: list[tuple[str, int, int]],
+    en_pool: list[tuple[str, int, int]],
+    zh_limit: int = 8,
+    en_limit: int = 6,
+) -> dict[str, list[dict[str, str]]]:
+    """保留 AI 產生的不同意圖，再用 autocomplete 補足字面變化。
+
+    這一步完全是確定性的，避免為了從候選詞再挑一次而多呼叫模型。
+    """
+
+    def add(
+        selected: list[dict[str, str]], term: Any, intent: str, reason: str, limit: int
+    ) -> None:
+        clean = str(term or "").strip()
+        if not clean or len(selected) >= limit or len(clean) > 90:
+            return
+        if any(text_similarity(clean, item["kw"]) >= 0.82 for item in selected):
+            return
+        selected.append({"kw": clean, "intent": intent, "reason": reason})
+
+    zh: list[dict[str, str]] = []
+    zh_seed_target = max(1, zh_limit - 2)
+    categories = [
+        ("core_terms", "核心詞"),
+        ("question_terms", "問句"),
+        ("problem_terms", "問題"),
+        ("adjacent_terms", "相鄰題材"),
+    ]
+    # 先讓每一類至少有機會出現，再補第二個核心／問句，避免整批都是長問句。
+    for offset in range(2):
+        for key, label in categories:
+            values = plan.get(key, [])
+            if offset < len(values):
+                add(zh, values[offset], label, "AI 產生的搜尋起點", zh_seed_target)
+
+    for term, _score, _round in zh_pool:
+        add(zh, term, "延伸詞", "公開搜尋建議的字面延伸", zh_limit)
+    for key, label in categories:
+        for term in plan.get(key, [])[2:]:
+            add(zh, term, label, "AI 產生的搜尋起點", zh_limit)
+    for term, _score, _round in zh_pool:
+        add(zh, term, "延伸詞", "公開搜尋建議的字面延伸", zh_limit)
+
+    en: list[dict[str, str]] = []
+    en_seed_target = max(1, en_limit - 1)
+    for term in plan.get("en_terms", []):
+        add(en, term, "英文搜尋詞", "AI 產生的自然英文說法", en_seed_target)
+    for term, _score, _round in en_pool:
+        add(en, term, "英文延伸詞", "公開搜尋建議的字面延伸", en_limit)
+    for term in plan.get("en_terms", []):
+        add(en, term, "英文搜尋詞", "AI 產生的自然英文說法", en_limit)
+
+    return {"zh": zh[:zh_limit], "en": en[:en_limit]}
 
 
 def infer_origin(video: dict[str, Any], channel_country: str = "") -> str:

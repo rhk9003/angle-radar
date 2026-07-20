@@ -6,15 +6,15 @@
 
 打開白名單 Sheet，第一列表頭改成（順序不拘）：
 
-| code | name | remaining | deep_mode |
-|---|---|---|---|
-| mei001 | 小美 | 20 | TRUE |
-| jim002 | 阿吉 | 10 | FALSE |
+| code | name | remaining |
+|---|---|---|
+| mei001 | 小美 | 20 |
+| jim002 | 阿吉 | 10 |
 
 - `code`：發給朋友的試用碼（**每人不同**）
 - `name`：暱稱
 - `remaining`：剩餘次數（用完＝0 就不能用；加值就把數字改大）
-- `deep_mode`：`FALSE` 關閉這人的深度拆解；空白＝允許
+- 舊表的 `deep_mode` 欄位可以保留，新版一般模式不會使用它
 
 > 這張表就是你[原本建好的白名單](https://docs.google.com/spreadsheets/d/1x5Z4C58mDJ8YZObi3HoTyybF0vRea4DUiMl9ubATB2Y/edit)。把 `active/daily_limit/total_limit` 那幾欄換成一欄 `remaining` 即可。用這個 GAS 版後，Sheet 的「知道連結的人可檢視」共用可以收回（改回私有更安全，因為 GAS 用你自己的權限讀寫）。
 
@@ -48,19 +48,19 @@ WHITELIST_API_KEY = "與 Code.gs 內 API_KEY 一模一樣的密鑰"
 ```
 應回 `{"ok":true,"found":true,"name":"小美","remaining":20,"deep":true}`。
 
-之後在 app 裡用該碼登入 → 側邊欄顯示「剩餘次數 20」→ 每出一份菜單扣 1；跑失敗會自動退還。
+之後在 app 裡用該碼登入 → 側邊欄顯示「剩餘次數 20」→ 每出一份切角報告扣 1；跑失敗會自動退還。
 
-使用者送出「Angle Radar vs 一般 AI」比較回饋後，程式會自動建立 `feedback` 分頁，欄位為：
+使用者送出切角新穎度與可用性回饋後，程式會自動建立 `feedback` 分頁，欄位為：
 
 | timestamp | code | name | direction | verdict | note |
 |---|---|---|---|---|---|
 
-此分頁可用來統計 Angle Radar 的真實勝率，不會影響剩餘次數。
+此分頁可用來統計有多少報告至少提供一個想深入的切角，不會影響剩餘次數。
 
 ## 運作邏輯
 
 - 登入：`check`（不扣）→ 顯示剩餘
-- 出菜單：`consume`（原子扣 1；remaining>0 才扣得動，用 LockService 防並發重扣）
+- 出報告：`consume`（原子扣 1；remaining>0 才扣得動，用 LockService 防並發重扣）
 - 跑失敗：`refund`（加 1 退還）
-- 比較回饋：`feedback`（寫入 `feedback` 分頁，不扣次數）
+- 切角回饋：`feedback`（寫入 `feedback` 分頁，不扣次數）
 - 加值：你直接在 Sheet 把 `remaining` 數字改大即可，即時生效

@@ -1,5 +1,5 @@
 /**
- * 切角點單機 — 白名單「剩餘次數」API（綁在白名單 Google Sheet 上）
+ * 切角雷達 — 白名單「剩餘次數」API（綁在白名單 Google Sheet 上）
  *
  * 白名單分頁（第一列表頭，順序不拘）：code | name | remaining | deep_mode
  *   remaining：剩餘可用次數，consume 一次扣 1，扣到 0 就不能用；加值＝把數字改大
@@ -9,7 +9,7 @@
  *   action=check   ：查詢，不扣次數（登入＋顯示剩餘用）
  *   action=consume ：原子扣 1（remaining>0 才扣得動；否則回 depleted）
  *   action=refund  ：加 1（點單失敗時退還）
- *   action=feedback：記錄 Angle Radar 與通用 AI 的比較結果
+ *   action=feedback：記錄切角新穎度與可用性回饋
  * 回傳 JSON：{ok, name, remaining, deep, error?}
  *
  * 安裝見 SETUP.md
