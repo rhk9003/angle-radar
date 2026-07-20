@@ -407,7 +407,7 @@ def menu_prompt(
   confidence 必須沿用對應 signal，不得自行升級。suggested_move 要說明現在如何搶先切入，而不是叫使用者照抄來源。
 - recommendation_score 綜合證據、使用者契合與可執行性；production_difficulty 以一般創作者實際製作成本判斷。
 - input_suggestions 同時給 3 個下一次可更精準搜尋的輸入，不要另外寫長篇說明。
-- 全部使用繁體中文、短句、講人話。
+- 全部使用繁體中文、短句、講人話；每個字串欄位最多 2 個短句，優先確保完整 JSON。
 
 使用者對這一批的調整要求：{adjustment}
 """.strip()
@@ -623,7 +623,7 @@ def generic_ai_comparison_prompt(brief: dict[str, str], n_topics: int = 6) -> st
     return f"""
 你是一位 YouTube 內容企劃顧問。請根據以下需求，提出 {n_topics} 個值得拍的影片企劃：
 
-{brief_to_text(brief)}
+{brief_to_text(brief, include_market=False)}
 
 每個企劃請包含：
 1. 企劃名稱
@@ -633,7 +633,7 @@ def generic_ai_comparison_prompt(brief: dict[str, str], n_topics: int = 6) -> st
 5. 如何做出差異化
 6. 製作難度與優先順序
 
-請使用繁體中文、具體短句，不要使用空泛行銷術語。如果你沒有即時市場資料或真實影片證據，請清楚標示為推測，不要虛構數據或來源。
+請使用繁體中文、具體短句，不要使用空泛行銷術語。不要虛構數據、案例或來源；不確定的內容直接標示為假設。
 """.strip()
 
 

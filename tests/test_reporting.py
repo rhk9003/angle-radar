@@ -11,7 +11,9 @@ class ReportingTests(unittest.TestCase):
         )
         for secret_term in ("autocomplete", "outlier", "探勘輪數", "評分公式"):
             self.assertNotIn(secret_term, prompt)
-        self.assertIn("沒有即時市場資料", prompt)
+        for hidden_market_term in ("市場", "台灣主場", "英文市場", "國內外"):
+            self.assertNotIn(hidden_market_term, prompt)
+        self.assertIn("不要虛構數據", prompt)
 
     def test_invalid_evidence_id_is_not_rendered_as_fake_source(self):
         menu = {
