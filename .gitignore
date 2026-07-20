@@ -1,0 +1,15 @@
+# 機密：絕不進版控（這是 public repo）
+.streamlit/secrets.toml
+.env
+*.key
+
+# Python
+__pycache__/
+*.pyc
+
+# 系統
+.DS_Store
+
+# 產出檔
+切角菜單_*.md
+*.md.bak
