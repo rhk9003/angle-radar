@@ -901,10 +901,16 @@ def _wl_rows():
         return _gs_book().sheet1.get_all_records()
     return _wl_rows_lite(_secret("WHITELIST_SHEET_ID"), _secret("WHITELIST_SHEET_GID") or "0")
 
+def _int0(v):
+    try:
+        return int(float(str(v).strip() or 0))
+    except Exception:
+        return 0
+
 def _wl_lookup(code):
-    """回 {ok, name, daily_limit, deep, msg}"""
+    """回 {ok, name, daily_limit, total_limit, deep, msg}。limit=0 代表不限"""
     if _wl_mode() == "off":
-        return {"ok": True, "name": "", "daily_limit": 0, "deep": True}
+        return {"ok": True, "name": "", "daily_limit": 0, "total_limit": 0, "deep": True}
     try:
         rows = _wl_rows()
     except Exception:
@@ -915,32 +921,38 @@ def _wl_lookup(code):
         if rl.get("code", "") == code:
             if str(rl.get("active", "TRUE")).upper() in ("FALSE", "0", "NO", "N"):
                 return {"ok": False, "msg": "此通行碼已停用"}
-            try:
-                limit = int(float(rl.get("daily_limit", "") or 0))
-            except Exception:
-                limit = 0
             # deep：只有明確填 FALSE 才關閉；沒有這欄或空白＝允許
             deep = str(rl.get("deep_mode", "")).strip().upper() not in ("FALSE", "0", "NO", "N")
-            return {"ok": True, "name": rl.get("name", ""), "daily_limit": limit, "deep": deep}
+            return {"ok": True, "name": rl.get("name", ""),
+                    "daily_limit": _int0(rl.get("daily_limit", "")),
+                    "total_limit": _int0(rl.get("total_limit", "")),
+                    "deep": deep}
     return {"ok": False, "msg": "通行碼不在名單中，跟站主索取試用碼 🙏"}
 
-def _wl_used_today(code):
+def _wl_usage(code):
+    """回 (今日已用, 累計已用)。LITE/off 模式無法跨 session 計數，回本 session 計數"""
     if _wl_mode() != "full":
-        return st.session_state.get("_wl_used", 0)
+        u = st.session_state.get("_wl_used", 0)
+        return u, u
     try:
         book = _gs_book()
         try:
             ws = book.worksheet("usage")
         except Exception:
-            return 0
+            return 0, 0
         today = datetime.now().strftime("%Y-%m-%d")
-        return sum(1 for row in ws.get_all_values()[1:]
-                   if len(row) >= 2 and row[0] == today and str(row[1]).strip() == code)
+        rows = ws.get_all_values()[1:]
+        total = sum(1 for r in rows if len(r) >= 2 and str(r[1]).strip() == code)
+        day = sum(1 for r in rows if len(r) >= 2 and r[0] == today and str(r[1]).strip() == code)
+        return day, total
     except Exception:
-        return 0
+        return 0, 0
 
 def _wl_record(code, name):
+    # 本地 session 計數（LITE 模式與即時顯示用）
     st.session_state["_wl_used"] = st.session_state.get("_wl_used", 0) + 1
+    st.session_state["_wl_used_today"] = st.session_state.get("_wl_used_today", 0) + 1
+    st.session_state["_wl_used_total"] = st.session_state.get("_wl_used_total", 0) + 1
     if _wl_mode() != "full":
         return
     try:
@@ -962,9 +974,11 @@ if _wl_mode() != "off" and not st.session_state.get("_wl_ok"):
     if st.button("進入", type="primary"):
         info = _wl_lookup(_code)
         if info["ok"]:
+            _ud, _ut = _wl_usage(_code.strip())
             st.session_state.update({
                 "_wl_ok": True, "_wl_code": _code.strip(), "_wl_name": info["name"],
-                "_wl_limit": info["daily_limit"], "_wl_deep": info["deep"],
+                "_wl_daily": info["daily_limit"], "_wl_total": info["total_limit"],
+                "_wl_deep": info["deep"], "_wl_used_today": _ud, "_wl_used_total": _ut,
             })
             st.rerun()
         else:
@@ -978,8 +992,17 @@ with st.sidebar:
     if st.session_state.get("_wl_ok"):
         _nm = st.session_state.get("_wl_name") or "測試用戶"
         st.success(f"歡迎，{_nm} 👋")
-        _lim = st.session_state.get("_wl_limit", 0)
-        st.caption(f"今日點單上限：{_lim} 次" if _lim else "今日點單：不限次")
+        _dl = st.session_state.get("_wl_daily", 0)
+        _tl = st.session_state.get("_wl_total", 0)
+        _ud = st.session_state.get("_wl_used_today", 0)
+        _ut = st.session_state.get("_wl_used_total", 0)
+        _c1, _c2 = st.columns(2)
+        _c1.metric("今日剩餘", f"{max(_dl - _ud, 0)}" if _dl else "∞",
+                   help=f"今日已用 {_ud}／上限 {_dl or '不限'}")
+        _c2.metric("總剩餘", f"{max(_tl - _ut, 0)}" if _tl else "∞",
+                   help=f"累計已用 {_ut}／上限 {_tl or '不限'}")
+        if _wl_mode() == "lite":
+            st.caption("⚠️ 目前為 LITE 模式：額度僅在本次連線內計算（重整會歸零）。真正限次需 FULL 模式")
         if not st.session_state.get("_wl_deep", True):
             st.caption("🎥 深度拆解未對你開放")
     st.header("🔑 API 金鑰")
@@ -1086,15 +1109,22 @@ with col_hint:
     st.caption("約 2-5 分鐘：AI 選字 → 掃描國內外爆款 → 拆解參考影片 → 出切角菜單")
 
 if run_clicked:
-    _limit = st.session_state.get("_wl_limit", 0)
     _code = st.session_state.get("_wl_code", "")
-    _used = _wl_used_today(_code) if _wl_mode() != "off" else 0
+    _dl = st.session_state.get("_wl_daily", 0)
+    _tl = st.session_state.get("_wl_total", 0)
+    if _wl_mode() != "off":
+        _ud, _ut = _wl_usage(_code)   # 執行前抓最新用量，據以強制限次
+        st.session_state["_wl_used_today"], st.session_state["_wl_used_total"] = _ud, _ut
+    else:
+        _ud = _ut = 0
     if not GEMINI_API_KEY or not YOUTUBE_API_KEY:
         st.error("請先在左側填入 Gemini 與 YouTube API Key")
     elif not direction.strip():
         st.error("請先輸入你想切入的方向")
-    elif _limit and _used >= _limit:
-        st.error(f"今天的 {_limit} 次點單已用完，明天再來 🙏")
+    elif _dl and _ud >= _dl:
+        st.error(f"今天的 {_dl} 次點單已用完，明天再來 🙏")
+    elif _tl and _ut >= _tl:
+        st.error(f"你的總試用額度 {_tl} 次已用完，跟站主續額度吧 🙏")
     else:
         cfg = {
             'gemini_key': GEMINI_API_KEY, 'yt_key': YOUTUBE_API_KEY,
