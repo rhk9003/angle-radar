@@ -862,6 +862,14 @@ def _secret(name):
 def _wl_enabled():
     return bool(_secret("WHITELIST_API_URL"))
 
+def _is_admin():
+    """管理者才看得到模型設定與進階設定。本機無白名單時視為管理者；
+    有白名單時，登入碼需等於 secrets 的 ADMIN_CODE"""
+    if not _wl_enabled():
+        return True
+    ac = _secret("ADMIN_CODE")
+    return bool(ac) and st.session_state.get("_wl_code", "") == ac
+
 def _wl_api(action, code):
     """呼叫 GAS 白名單 API。回 dict；失敗回 {'ok': False, 'error': ...}"""
     try:
@@ -924,22 +932,7 @@ with st.sidebar:
                                         help="需至 Google Cloud Console 啟用 YouTube Data API v3")
         st.caption("💡 把 key 存進 `.streamlit/secrets.toml` 就不用每次填")
 
-    st.markdown("---")
-    st.markdown("**模型設定**")
-    REPORT_MODEL = st.selectbox(
-        "菜單生成模型",
-        ["gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3-flash-preview",
-         "gemini-2.5-pro", "gemini-2.5-flash"],
-        help="菜單品質的核心。3.5-flash 是新一代中階旗艦（~NT$2/輪）；"
-             "3.1-pro 最強但稍貴；預算極省選 3-flash-preview"
-    )
-    PIPELINE_MODEL = st.selectbox(
-        "管線模型（選字／過濾／拆解）",
-        ["gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash"],
-        help="機械工作用便宜模型即可。3.1-flash-lite 最省（含深度模式看影片也最划算）；"
-             "若你的 key 打不到新模型，退回 2.5-flash"
-    )
-
+    # 深度拆解：依 deep_mode 權限，有權限者（含一般試用者）都能自己開關
     _deep_allowed = st.session_state.get("_wl_deep", True)
     DEEP_MODE = st.toggle(
         "🎥 深度拆解（Gemini 直接看影片）",
@@ -952,24 +945,47 @@ with st.sidebar:
     if not _deep_allowed:
         DEEP_MODE = False
 
-    with st.expander("⚙️ 進階設定"):
-        N_TOPICS = st.slider("菜單切角數", 4, 10, 6)
-        N_EN = st.slider("英文（國外）關鍵字數", 2, 8, 5,
-                         help="國外是找 reference 的主戰場，建議多於中文")
-        N_ZH = st.slider("中文關鍵字數", 1, 6, 3,
-                         help="中文搜尋主要用來驗證『這題在中文市場有沒有人做』")
-        MINE_ROUNDS = st.slider("關鍵字探勘輪數", 1, 3, 2,
-                                help="模擬人工「看到延伸字 → 挑有潛力的 → 再往下挖」的循環，"
-                                     "每輪由 AI 決定哪些字值得續挖。autocomplete 免配額，多挖不花錢")
-        PER_KW = st.slider("每個關鍵字抓片數", 8, 25, 15)
-        ANALYZE_N = st.slider("深度拆解影片數", 3, 10, 6)
-        WINDOW_DAYS = st.select_slider("只看最近", options=[30, 90, 180, 365], value=180,
-                                       help="找 reference 要看近期爆款，太舊的參考價值低")
-        MIN_VIEWS = st.select_slider("最低觀看數門檻", options=[1000, 3000, 5000, 10000, 30000], value=3000)
-        VIDEO_TYPE = st.radio("影片類型", ["全部", "僅長片", "僅 Shorts"], horizontal=True)
-
-    quota_est = (N_EN + N_ZH) * 100 + 20
-    st.caption(f"📊 單次分析約消耗 YouTube API 配額 ~{quota_est} units（每日免費 10,000）")
+    if _is_admin():
+        # 管理者：可調模型與進階參數
+        st.markdown("---")
+        st.markdown("**模型設定** 🔧")
+        REPORT_MODEL = st.selectbox(
+            "菜單生成模型",
+            ["gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3-flash-preview",
+             "gemini-2.5-pro", "gemini-2.5-flash"],
+            help="菜單品質的核心。3.5-flash 是新一代中階旗艦（~NT$2/輪）；"
+                 "3.1-pro 最強但稍貴；預算極省選 3-flash-preview"
+        )
+        PIPELINE_MODEL = st.selectbox(
+            "管線模型（選字／過濾／拆解）",
+            ["gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash"],
+            help="機械工作用便宜模型即可。3.1-flash-lite 最省（含深度模式看影片也最划算）；"
+                 "若你的 key 打不到新模型，退回 2.5-flash"
+        )
+        with st.expander("⚙️ 進階設定 🔧"):
+            N_TOPICS = st.slider("菜單切角數", 4, 10, 6)
+            N_EN = st.slider("英文（國外）關鍵字數", 2, 8, 5,
+                             help="國外是找 reference 的主戰場，建議多於中文")
+            N_ZH = st.slider("中文關鍵字數", 1, 6, 3,
+                             help="中文搜尋主要用來驗證『這題在中文市場有沒有人做』")
+            MINE_ROUNDS = st.slider("關鍵字探勘輪數", 1, 3, 2,
+                                    help="模擬人工「看到延伸字 → 挑有潛力的 → 再往下挖」的循環，"
+                                         "每輪由 AI 決定哪些字值得續挖。autocomplete 免配額，多挖不花錢")
+            PER_KW = st.slider("每個關鍵字抓片數", 8, 25, 15)
+            ANALYZE_N = st.slider("深度拆解影片數", 3, 10, 6)
+            WINDOW_DAYS = st.select_slider("只看最近", options=[30, 90, 180, 365], value=180,
+                                           help="找 reference 要看近期爆款，太舊的參考價值低")
+            MIN_VIEWS = st.select_slider("最低觀看數門檻", options=[1000, 3000, 5000, 10000, 30000], value=3000)
+            VIDEO_TYPE = st.radio("影片類型", ["全部", "僅長片", "僅 Shorts"], horizontal=True)
+        quota_est = (N_EN + N_ZH) * 100 + 20
+        st.caption(f"📊 單次分析約消耗 YouTube API 配額 ~{quota_est} units（每日免費 10,000）")
+    else:
+        # 一般試用者：固定預設值，不顯示可調 UI（控成本、介面乾淨）
+        REPORT_MODEL = "gemini-3.5-flash"
+        PIPELINE_MODEL = "gemini-3.1-flash-lite"
+        N_TOPICS, N_EN, N_ZH, MINE_ROUNDS = 6, 5, 3, 2
+        PER_KW, ANALYZE_N, WINDOW_DAYS, MIN_VIEWS = 15, 6, 180, 3000
+        VIDEO_TYPE = "全部"
 
 direction = st.text_area(
     "🧭 你想切的方向（一個詞也行）",
