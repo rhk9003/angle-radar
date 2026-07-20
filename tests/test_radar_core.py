@@ -5,6 +5,7 @@ from radar_core import (
     attach_outlier_metrics_v2,
     brief_quality,
     build_brief,
+    build_search_terms,
     build_transcript_evidence,
     compress_comments,
     derive_rising_signals,
@@ -50,6 +51,33 @@ class EvidenceTests(unittest.TestCase):
         compact = compress_comments(comments, limit=8)
         self.assertEqual(len(compact), 2)
         self.assertEqual(compact[0]["text"], "想看台灣品牌版本")
+
+
+class KeywordTests(unittest.TestCase):
+    def test_one_plan_keeps_short_terms_questions_and_problems(self):
+        plan = {
+            "core_terms": ["算命", "算命創業"],
+            "question_terms": ["如何成為命理師", "命理師怎麼收費"],
+            "problem_terms": ["命理師沒有客戶", "命理師接案風險"],
+            "adjacent_terms": ["命理個人品牌"],
+            "en_terms": ["start astrology business", "get first tarot clients"],
+        }
+        selected = build_search_terms(
+            plan,
+            [("算命師如何開始接案", 90, 1), ("命理創業收入", 80, 1)],
+            [("spiritual business mistakes", 90, 1)],
+            zh_limit=7,
+            en_limit=3,
+        )
+        zh_terms = [item["kw"] for item in selected["zh"]]
+        self.assertIn("算命", zh_terms)
+        self.assertIn("如何成為命理師", zh_terms)
+        self.assertIn("命理師沒有客戶", zh_terms)
+        self.assertIn("命理個人品牌", zh_terms)
+        self.assertIn("算命師如何開始接案", zh_terms)
+        self.assertLessEqual(len(zh_terms), 7)
+        self.assertIn("spiritual business mistakes", [item["kw"] for item in selected["en"]])
+        self.assertEqual(len(selected["en"]), 3)
 
 
 class ScoringTests(unittest.TestCase):
