@@ -15,6 +15,7 @@
 import streamlit as st
 import requests
 import json
+import io
 import re
 import google.generativeai as genai
 from googleapiclient.discovery import build
@@ -883,8 +884,16 @@ def _gs_book():
 
 @st.cache_data(ttl=120, show_spinner=False)
 def _wl_rows_lite(sheet_id, gid):
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-    df = pd.read_csv(url, dtype=str).fillna("")
+    # gid 為空或 "0" → 不帶 gid，直接用第一個分頁（CSV 轉成的 Sheet 首頁 gid 常不是 0，
+    # 硬指定 gid=0 會 400；省略則自動抓第一頁，最穩）
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+    if gid and str(gid).strip() not in ("", "0"):
+        url += f"&gid={gid}"
+    # 用 requests（自帶 certifi 憑證）而非 pd.read_csv 直讀 URL，避開某些環境的 SSL 憑證問題
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+    resp.encoding = "utf-8"
+    df = pd.read_csv(io.StringIO(resp.text), dtype=str).fillna("")
     return df.to_dict("records")
 
 def _wl_rows():
