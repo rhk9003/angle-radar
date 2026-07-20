@@ -38,43 +38,25 @@ streamlit run app.py
 
 > ⚠️ 部署後是**你的金鑰在付費**，任何拿到網址的人都能燒你的額度——所以務必啟用下方白名單。
 
-## 白名單（用 Google Sheet 控管：誰能用｜每人幾次｜哪些功能）
+## 白名單（剩餘次數倒扣，用 Apps Script 記帳）
 
-Sheet 第一列表頭放這幾欄（**順序不拘，靠欄名比對**），一人一列：
+每個朋友一組 `code`（試用碼）＋一個 `remaining`（剩餘次數）。每成功出一份菜單，Apps Script
+把 `remaining` 扣 1，扣到 0 就不能用；要加值就把數字改大。Sheet 保持私有，免服務帳號金鑰。
+
+Sheet 第一列表頭（順序不拘，靠欄名比對）：
 
 | 欄 | 意義 |
 |---|---|
-| `code` | 發給朋友的試用碼（**每人一組不同的碼**，登入用，也是用量計數的 key） |
-| `name` | 暱稱（登入後打招呼、對帳用） |
-| `active` | `FALSE` 停用；空白＝啟用 |
-| `daily_limit` | **每日**點單次數上限；空白或 `0`＝不限 |
-| `total_limit` | **累計總**點單次數上限；空白或 `0`＝不限 |
+| `code` | 試用碼（**每人一組不同的碼**，登入用，也是記帳 key） |
+| `name` | 暱稱（登入打招呼用） |
+| `remaining` | 剩餘次數；每成功點單扣 1，`0`＝不能用；加值＝改大數字 |
 | `deep_mode` | `FALSE` 關閉這人的「深度拆解」（貴功能）；空白＝允許 |
 
-> 朋友怎麼被辨認：他輸入你發的 `code` → app 比對 Sheet → 這組碼就是他的身分＋額度計數 key。**所以每人要給不同的碼**，共用會把用量算在一起。登入後側邊欄會顯示他的「今日剩餘 / 總剩餘」。
+> 朋友怎麼被辨認：他輸入你發的 `code` → app 呼叫 Apps Script 比對 Sheet → 這組碼就是他的身分＋扣次數的 key。**所以每人要給不同的碼**。登入後側邊欄顯示「剩餘次數」，跑失敗會自動退還不白扣。
 
-**改 Sheet 即時生效**（快取 2 分鐘）：要新增／停用試用者、調次數、開關功能，直接編輯 Sheet，不用動程式或重部署。
+**設定步驟見 [whitelist_gas/SETUP.md](whitelist_gas/SETUP.md)**：把 GAS 貼進白名單 Sheet 的 Apps Script → 部署成 Web App → 網址與密鑰填進 secrets 的 `WHITELIST_API_URL` / `WHITELIST_API_KEY`。加值直接在 Sheet 改 `remaining` 數字即可，即時生效。
 
-### LITE 模式（唯讀，最快上手）
-
-只設 `WHITELIST_SHEET_ID`：
-
-1. Sheet → 共用 → 一般存取權改「**知道連結的人皆可檢視**」
-2. 網址取出 Sheet ID 填進 secrets 的 `WHITELIST_SHEET_ID`
-
-功能開關（active／deep_mode）完全可用；**但「每日次數」無法跨 session 強制**——因為唯讀 Sheet 沒辦法記錄用量，限次只在單一瀏覽器 session 內軟性計數（重整就歸零）。想真正限次請用 FULL 模式。
-
-### FULL 模式（可寫，限次真正生效）
-
-讓 app 用 Google **服務帳號**存取 Sheet，就能把每次點單寫進一個 `usage` 分頁、據以強制限次：
-
-1. [Google Cloud Console](https://console.cloud.google.com)（用你開 YouTube key 的同專案即可）→ 啟用 **Google Sheets API**
-2. IAM → 服務帳號 → 建立 → 建立 JSON 金鑰下載
-3. 把白名單 Sheet **共用給那個服務帳號的 email**（`xxx@xxx.iam.gserviceaccount.com`），權限給「**編輯者**」
-4. 把 JSON 內容依 `secrets.toml.example` 的 `[gcp_service_account]` 格式貼進 secrets（同時保留 `WHITELIST_SHEET_ID`）
-5. app 會自動在 Sheet 建一個 `usage` 分頁記錄用量；白名單放**第一個分頁**
-
-> 沒設 `WHITELIST_SHEET_ID` 時閘門完全不啟用（本機自用直接進）。
+> 兩行都沒設時閘門不啟用（本機自用直接進）。
 
 ## 成本與配額（參考）
 

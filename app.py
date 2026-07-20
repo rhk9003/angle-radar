@@ -15,7 +15,6 @@
 import streamlit as st
 import requests
 import json
-import io
 import re
 import google.generativeai as genai
 from googleapiclient.discovery import build
@@ -847,142 +846,56 @@ def _secret(name):
 
 
 # ══════════════════════════════════════════════════════════
-# Google Sheet 白名單（控管：誰能用｜每人每日幾次｜深度功能開不開）
+# 白名單（剩餘次數倒扣模型）
 #
-# 兩種模式：
-#   FULL（有設 [gcp_service_account]）：可讀可寫 → 真的記錄用量、能限次
-#   LITE（只設 WHITELIST_SHEET_ID）：唯讀 CSV → 功能開關可用，限次只在單一 session 內軟性計數
+# 由一個綁在白名單 Google Sheet 上的 Apps Script Web App 負責讀寫，
+# app 只呼叫它的 HTTP 端點；Sheet 完全私有、免服務帳號金鑰。
+# Sheet 欄位（第一列表頭）：code | name | remaining | deep_mode
+#   remaining：剩餘可用次數，每成功點單一次由 GAS 扣 1，扣到 0 就不能用；加值＝把數字改大
+#   deep_mode：FALSE 關閉該用戶深度拆解（空白＝允許）
 #
-# 白名單分頁欄位（第一列表頭）：code | name | active | daily_limit | deep_mode
-#   active：FALSE 停用（空白＝啟用）
-#   daily_limit：每日次數上限（空白或 0＝不限）
-#   deep_mode：FALSE 關閉該用戶的深度拆解（空白＝允許）
-# FULL 模式會自動用一個 usage 分頁記錄每次點單。
+# secrets 需要：
+#   WHITELIST_API_URL = GAS Web App 的 /exec 網址
+#   WHITELIST_API_KEY = 與 GAS 內 API_KEY 相同的密鑰
+# 兩者都沒設 → 白名單關閉（本機自用直接進）。GAS 程式與設定見 whitelist_gas/。
 # ══════════════════════════════════════════════════════════
-def _secret_table(name):
+def _wl_enabled():
+    return bool(_secret("WHITELIST_API_URL"))
+
+def _wl_api(action, code):
+    """呼叫 GAS 白名單 API。回 dict；失敗回 {'ok': False, 'error': ...}"""
     try:
-        t = st.secrets.get(name, None)
-        return dict(t) if t else None
+        resp = requests.get(_secret("WHITELIST_API_URL"), params={
+            "key": _secret("WHITELIST_API_KEY"), "action": action, "code": code.strip(),
+        }, timeout=20)
+        return resp.json()
     except Exception:
-        return None
+        return {"ok": False, "error": "api_error"}
 
-def _wl_mode():
-    if _secret_table("gcp_service_account") and _secret("WHITELIST_SHEET_ID"):
-        return "full"
-    if _secret("WHITELIST_SHEET_ID"):
-        return "lite"
-    return "off"
+_WL_ERR = {
+    "not_found": "通行碼不在名單中，跟站主索取試用碼 🙏",
+    "depleted": "你的剩餘次數是 0 了，跟站主加值吧 🙏",
+    "unauthorized": "白名單設定有誤（密鑰不符），請聯絡站主",
+    "bad_headers": "白名單表頭需含 code 與 remaining 欄，請聯絡站主",
+    "api_error": "白名單服務連線失敗，請稍後再試",
+}
 
-@st.cache_resource(show_spinner=False)
-def _gs_book():
-    import gspread
-    from google.oauth2.service_account import Credentials
-    creds = Credentials.from_service_account_info(
-        dict(st.secrets["gcp_service_account"]),
-        scopes=["https://www.googleapis.com/auth/spreadsheets"])
-    return gspread.authorize(creds).open_by_key(_secret("WHITELIST_SHEET_ID"))
-
-@st.cache_data(ttl=120, show_spinner=False)
-def _wl_rows_lite(sheet_id, gid):
-    # gid 為空或 "0" → 不帶 gid，直接用第一個分頁（CSV 轉成的 Sheet 首頁 gid 常不是 0，
-    # 硬指定 gid=0 會 400；省略則自動抓第一頁，最穩）
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-    if gid and str(gid).strip() not in ("", "0"):
-        url += f"&gid={gid}"
-    # 用 requests（自帶 certifi 憑證）而非 pd.read_csv 直讀 URL，避開某些環境的 SSL 憑證問題
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
-    resp.encoding = "utf-8"
-    df = pd.read_csv(io.StringIO(resp.text), dtype=str).fillna("")
-    return df.to_dict("records")
-
-def _wl_rows():
-    if _wl_mode() == "full":
-        return _gs_book().sheet1.get_all_records()
-    return _wl_rows_lite(_secret("WHITELIST_SHEET_ID"), _secret("WHITELIST_SHEET_GID") or "0")
-
-def _int0(v):
-    try:
-        return int(float(str(v).strip() or 0))
-    except Exception:
-        return 0
-
-def _wl_lookup(code):
-    """回 {ok, name, daily_limit, total_limit, deep, msg}。limit=0 代表不限"""
-    if _wl_mode() == "off":
-        return {"ok": True, "name": "", "daily_limit": 0, "total_limit": 0, "deep": True}
-    try:
-        rows = _wl_rows()
-    except Exception:
-        return {"ok": False, "msg": "白名單讀取失敗，請聯絡站主"}
-    code = code.strip()
-    for r in rows:
-        rl = {str(k).strip().lower(): str(v).strip() for k, v in r.items()}
-        if rl.get("code", "") == code:
-            if str(rl.get("active", "TRUE")).upper() in ("FALSE", "0", "NO", "N"):
-                return {"ok": False, "msg": "此通行碼已停用"}
-            # deep：只有明確填 FALSE 才關閉；沒有這欄或空白＝允許
-            deep = str(rl.get("deep_mode", "")).strip().upper() not in ("FALSE", "0", "NO", "N")
-            return {"ok": True, "name": rl.get("name", ""),
-                    "daily_limit": _int0(rl.get("daily_limit", "")),
-                    "total_limit": _int0(rl.get("total_limit", "")),
-                    "deep": deep}
-    return {"ok": False, "msg": "通行碼不在名單中，跟站主索取試用碼 🙏"}
-
-def _wl_usage(code):
-    """回 (今日已用, 累計已用)。LITE/off 模式無法跨 session 計數，回本 session 計數"""
-    if _wl_mode() != "full":
-        u = st.session_state.get("_wl_used", 0)
-        return u, u
-    try:
-        book = _gs_book()
-        try:
-            ws = book.worksheet("usage")
-        except Exception:
-            return 0, 0
-        today = datetime.now().strftime("%Y-%m-%d")
-        rows = ws.get_all_values()[1:]
-        total = sum(1 for r in rows if len(r) >= 2 and str(r[1]).strip() == code)
-        day = sum(1 for r in rows if len(r) >= 2 and r[0] == today and str(r[1]).strip() == code)
-        return day, total
-    except Exception:
-        return 0, 0
-
-def _wl_record(code, name):
-    # 本地 session 計數（LITE 模式與即時顯示用）
-    st.session_state["_wl_used"] = st.session_state.get("_wl_used", 0) + 1
-    st.session_state["_wl_used_today"] = st.session_state.get("_wl_used_today", 0) + 1
-    st.session_state["_wl_used_total"] = st.session_state.get("_wl_used_total", 0) + 1
-    if _wl_mode() != "full":
-        return
-    try:
-        book = _gs_book()
-        try:
-            ws = book.worksheet("usage")
-        except Exception:
-            ws = book.add_worksheet("usage", rows=2000, cols=4)
-            ws.append_row(["date", "code", "name", "timestamp"])
-        now = datetime.now()
-        ws.append_row([now.strftime("%Y-%m-%d"), code, name, now.strftime("%Y-%m-%d %H:%M:%S")])
-    except Exception:
-        pass
-
-if _wl_mode() != "off" and not st.session_state.get("_wl_ok"):
+if _wl_enabled() and not st.session_state.get("_wl_ok"):
     st.subheader("🔑 測試通行")
     st.caption("這是邀請制的內測，請輸入站主給你的試用碼")
     _code = st.text_input("試用碼", label_visibility="collapsed", placeholder="輸入試用碼")
     if st.button("進入", type="primary"):
-        info = _wl_lookup(_code)
-        if info["ok"]:
-            _ud, _ut = _wl_usage(_code.strip())
+        info = _wl_api("check", _code)
+        if info.get("ok") or info.get("found"):
             st.session_state.update({
-                "_wl_ok": True, "_wl_code": _code.strip(), "_wl_name": info["name"],
-                "_wl_daily": info["daily_limit"], "_wl_total": info["total_limit"],
-                "_wl_deep": info["deep"], "_wl_used_today": _ud, "_wl_used_total": _ut,
+                "_wl_ok": True, "_wl_code": _code.strip(),
+                "_wl_name": info.get("name", ""),
+                "_wl_remaining": int(info.get("remaining", 0) or 0),
+                "_wl_deep": bool(info.get("deep", True)),
             })
             st.rerun()
         else:
-            st.error(info.get("msg", "通行碼無效"))
+            st.error(_WL_ERR.get(info.get("error", ""), "通行碼無效"))
     st.stop()
 
 # 金鑰：站主已在 secrets 設定就直接用（部署給朋友時，朋友看不到也不用填）；
@@ -992,17 +905,10 @@ with st.sidebar:
     if st.session_state.get("_wl_ok"):
         _nm = st.session_state.get("_wl_name") or "測試用戶"
         st.success(f"歡迎，{_nm} 👋")
-        _dl = st.session_state.get("_wl_daily", 0)
-        _tl = st.session_state.get("_wl_total", 0)
-        _ud = st.session_state.get("_wl_used_today", 0)
-        _ut = st.session_state.get("_wl_used_total", 0)
-        _c1, _c2 = st.columns(2)
-        _c1.metric("今日剩餘", f"{max(_dl - _ud, 0)}" if _dl else "∞",
-                   help=f"今日已用 {_ud}／上限 {_dl or '不限'}")
-        _c2.metric("總剩餘", f"{max(_tl - _ut, 0)}" if _tl else "∞",
-                   help=f"累計已用 {_ut}／上限 {_tl or '不限'}")
-        if _wl_mode() == "lite":
-            st.caption("⚠️ 目前為 LITE 模式：額度僅在本次連線內計算（重整會歸零）。真正限次需 FULL 模式")
+        _rem = st.session_state.get("_wl_remaining", 0)
+        st.metric("剩餘次數", _rem, help="每成功出一份菜單扣 1 次；用完請找站主加值")
+        if _rem <= 0:
+            st.caption("⚠️ 次數用完了，找站主加值")
         if not st.session_state.get("_wl_deep", True):
             st.caption("🎥 深度拆解未對你開放")
     st.header("🔑 API 金鑰")
@@ -1110,37 +1016,42 @@ with col_hint:
 
 if run_clicked:
     _code = st.session_state.get("_wl_code", "")
-    _dl = st.session_state.get("_wl_daily", 0)
-    _tl = st.session_state.get("_wl_total", 0)
-    if _wl_mode() != "off":
-        _ud, _ut = _wl_usage(_code)   # 執行前抓最新用量，據以強制限次
-        st.session_state["_wl_used_today"], st.session_state["_wl_used_total"] = _ud, _ut
-    else:
-        _ud = _ut = 0
     if not GEMINI_API_KEY or not YOUTUBE_API_KEY:
         st.error("請先在左側填入 Gemini 與 YouTube API Key")
     elif not direction.strip():
         st.error("請先輸入你想切入的方向")
-    elif _dl and _ud >= _dl:
-        st.error(f"今天的 {_dl} 次點單已用完，明天再來 🙏")
-    elif _tl and _ut >= _tl:
-        st.error(f"你的總試用額度 {_tl} 次已用完，跟站主續額度吧 🙏")
     else:
-        cfg = {
-            'gemini_key': GEMINI_API_KEY, 'yt_key': YOUTUBE_API_KEY,
-            'report_model': REPORT_MODEL, 'deep_mode': DEEP_MODE,
-            'direction': direction.strip(), 'extra': extra.strip(),
-            'n_topics': N_TOPICS, 'n_zh': N_ZH, 'n_en': N_EN,
-            'mine_rounds': MINE_ROUNDS,
-            'per_kw': PER_KW, 'analyze_n': ANALYZE_N,
-            'window_days': WINDOW_DAYS, 'min_views': MIN_VIEWS,
-            'video_type': VIDEO_TYPE,
-        }
-        result = run_pipeline(cfg)
-        if result:
-            result['cfg'] = cfg
-            st.session_state['radar_result'] = result
-            _wl_record(_code, st.session_state.get("_wl_name", ""))   # 成功才計一次用量
+        # 先向 GAS 扣一次（原子操作：remaining>0 才扣得動）；扣不動代表額度用完
+        _consumed = False
+        if _wl_enabled():
+            _r = _wl_api("consume", _code)
+            if not _r.get("ok"):
+                st.error(_WL_ERR.get(_r.get("error", ""), "額度不足或服務異常"))
+            else:
+                _consumed = True
+                st.session_state["_wl_remaining"] = int(_r.get("remaining", 0) or 0)
+        _may_run = _consumed or not _wl_enabled()
+        if _may_run:
+            cfg = {
+                'gemini_key': GEMINI_API_KEY, 'yt_key': YOUTUBE_API_KEY,
+                'report_model': REPORT_MODEL, 'deep_mode': DEEP_MODE,
+                'direction': direction.strip(), 'extra': extra.strip(),
+                'n_topics': N_TOPICS, 'n_zh': N_ZH, 'n_en': N_EN,
+                'mine_rounds': MINE_ROUNDS,
+                'per_kw': PER_KW, 'analyze_n': ANALYZE_N,
+                'window_days': WINDOW_DAYS, 'min_views': MIN_VIEWS,
+                'video_type': VIDEO_TYPE,
+            }
+            result = run_pipeline(cfg)
+            if result:
+                result['cfg'] = cfg
+                st.session_state['radar_result'] = result
+            elif _consumed:
+                # 跑失敗 → 把剛扣的次數退還，不讓使用者白白損失
+                _rf = _wl_api("refund", _code)
+                if _rf.get("ok"):
+                    st.session_state["_wl_remaining"] = int(_rf.get("remaining", 0) or 0)
+                st.info("這次沒跑成功，已把扣掉的次數退還給你。")
 
 # ---- 結果呈現（從 session_state 讀，rerun 不消失）----
 if 'radar_result' in st.session_state:

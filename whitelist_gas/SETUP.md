@@ -1,0 +1,58 @@
+# 白名單「剩餘次數」API — 安裝步驟
+
+讓 app 用 Apps Script 對白名單 Sheet 倒扣剩餘次數。Sheet 保持私有、免服務帳號金鑰。
+
+## 1. 白名單 Sheet 改成這個欄位
+
+打開白名單 Sheet，第一列表頭改成（順序不拘）：
+
+| code | name | remaining | deep_mode |
+|---|---|---|---|
+| mei001 | 小美 | 20 | TRUE |
+| jim002 | 阿吉 | 10 | FALSE |
+
+- `code`：發給朋友的試用碼（**每人不同**）
+- `name`：暱稱
+- `remaining`：剩餘次數（用完＝0 就不能用；加值就把數字改大）
+- `deep_mode`：`FALSE` 關閉這人的深度拆解；空白＝允許
+
+> 這張表就是你[原本建好的白名單](https://docs.google.com/spreadsheets/d/1x5Z4C58mDJ8YZObi3HoTyybF0vRea4DUiMl9ubATB2Y/edit)。把 `active/daily_limit/total_limit` 那幾欄換成一欄 `remaining` 即可。用這個 GAS 版後，Sheet 的「知道連結的人可檢視」共用可以收回（改回私有更安全，因為 GAS 用你自己的權限讀寫）。
+
+## 2. 貼 GAS 程式
+
+Sheet 上方 **擴充功能 → Apps Script** → 把 `Code.gs` 全部貼進去。
+把第一行 `const API_KEY = '換成你自己編的密鑰';` 改成你自己的一串亂數（等下 Streamlit 那邊要填一樣的）。
+
+## 3. 部署 Web App
+
+右上 **部署 → 新增部署作業 → 類型「網頁應用程式」**：
+- 執行身分：**我**
+- 誰可以存取：**任何人**
+
+複製部署網址（`https://script.google.com/macros/s/……/exec`）。
+
+## 4. 填進 Streamlit secrets
+
+本機 `.streamlit/secrets.toml`（與部署時 Streamlit Cloud 的 Secrets）加：
+
+```toml
+WHITELIST_API_URL = "上一步複製的 /exec 網址"
+WHITELIST_API_KEY = "與 Code.gs 內 API_KEY 一模一樣的密鑰"
+```
+
+## 5. 測試
+
+瀏覽器直接開（把 URL/KEY/CODE 換掉）驗證：
+```
+<你的exec網址>?key=<你的密鑰>&action=check&code=mei001
+```
+應回 `{"ok":true,"found":true,"name":"小美","remaining":20,"deep":true}`。
+
+之後在 app 裡用該碼登入 → 側邊欄顯示「剩餘次數 20」→ 每出一份菜單扣 1；跑失敗會自動退還。
+
+## 運作邏輯
+
+- 登入：`check`（不扣）→ 顯示剩餘
+- 出菜單：`consume`（原子扣 1；remaining>0 才扣得動，用 LockService 防並發重扣）
+- 跑失敗：`refund`（加 1 退還）
+- 加值：你直接在 Sheet 把 `remaining` 數字改大即可，即時生效

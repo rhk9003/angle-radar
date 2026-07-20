@@ -4,5 +4,3 @@ google-api-python-client
 google-generativeai
 youtube-transcript-api
 requests
-gspread>=6.0.0
-google-auth
