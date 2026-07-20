@@ -117,20 +117,21 @@ def brief_quality(brief: dict[str, str]) -> tuple[int, list[str]]:
     return min(score, 100), missing
 
 
-def brief_to_text(brief: dict[str, str]) -> str:
+def brief_to_text(brief: dict[str, str], *, include_market: bool = True) -> str:
     rows = [
         ("主題", brief.get("direction")),
         ("目標觀眾", brief.get("audience")),
         ("拍片目的", brief.get("goal")),
         ("創作者定位", brief.get("creator")),
         ("呈現形式", brief.get("format")),
-        ("市場", brief.get("market_focus")),
         ("片長", brief.get("duration")),
         ("可運用優勢", brief.get("strengths")),
         ("排除內容", brief.get("exclusions")),
         ("參考對象", brief.get("references")),
         ("其他補充", brief.get("extra")),
     ]
+    if include_market:
+        rows.insert(5, ("市場", brief.get("market_focus")))
     return "\n".join(f"- {label}：{value}" for label, value in rows if value and value != "不限")
 
 

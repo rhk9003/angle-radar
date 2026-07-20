@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -54,6 +55,7 @@ st.set_page_config(page_title="切角點單機", page_icon="🍽", layout="wide"
 DEFAULT_PIPELINE_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_REPORT_MODEL = "gemini-3.5-flash"
 BREAKDOWN_PROMPT_VERSION = "general-v2.2"
+LOGGER = logging.getLogger(__name__)
 
 
 def _secret(name: str) -> str:
@@ -496,8 +498,8 @@ def run_pipeline(cfg: dict[str, Any], brief: dict[str, str]) -> dict[str, Any]:
                 rising_signals=rising_signals,
             ),
             schema=MENU_SCHEMA,
-            max_output_tokens=4_500,
-            thinking_level="medium",
+            max_output_tokens=8_000,
+            thinking_level="low",
             temperature=0.35,
         )
         menu["cards"] = menu.get("cards", [])[: cfg["n_topics"]]
@@ -511,6 +513,7 @@ def run_pipeline(cfg: dict[str, Any], brief: dict[str, str]) -> dict[str, Any]:
         progress.complete()
         return result
     except Exception:
+        LOGGER.exception("Angle Radar pipeline failed")
         progress.fail()
         raise
 
@@ -533,8 +536,8 @@ def regenerate_menu(result: dict[str, Any], adjust_note: str, api_key: str) -> d
             rising_signals=result.get("rising_signals", []),
         ),
         schema=MENU_SCHEMA,
-        max_output_tokens=4_500,
-        thinking_level="medium",
+        max_output_tokens=8_000,
+        thinking_level="low",
         temperature=0.4,
     )
     menu["cards"] = menu.get("cards", [])[: cfg["n_topics"]]
@@ -660,11 +663,6 @@ with col_b:
         ["不限", "60 秒內 Shorts", "3–8 分鐘", "8–15 分鐘", "15 分鐘以上"],
         key="duration_input",
     )
-    market_focus = st.selectbox(
-        "市場重心",
-        ["台灣主場＋英文市場找參考", "台灣／繁中為主", "英文市場為主"],
-        key="market_input",
-    )
 
 with st.expander("再補一些限制，結果會更貼近你"):
     strengths = st.text_input(
@@ -694,7 +692,7 @@ brief = build_brief(
     goal=goal,
     who=who,
     form_pref=form_pref,
-    market_focus=market_focus,
+    market_focus="台灣主場＋英文市場找參考",
     duration_pref=duration_pref,
     strengths=strengths,
     exclusions=exclusions,
@@ -708,14 +706,14 @@ brief_col, compare_col = st.columns([1, 1])
 with brief_col:
     with st.container(border=True):
         st.markdown("#### 這次的需求摘要")
-        st.markdown(brief_to_text(brief) or "請先填寫上方需求。")
+        st.markdown(brief_to_text(brief, include_market=False) or "請先填寫上方需求。")
         st.progress(quality / 100, text=f"需求完整度 {quality}%")
         if missing and direction:
             st.caption("再補充會更準：" + "、".join(missing[:3]))
 with compare_col:
     with st.container(border=True):
         st.markdown("#### 🆚 想自己問 AI 看看？")
-        st.caption("右上角可直接複製。這是一般 AI 對照組，不含 Angle Radar 的市場證據。")
+        st.caption("右上角可直接複製。這是一個只根據你填寫內容作答的通用對照組。")
         st.code(generic_ai_comparison_prompt(brief, N_TOPICS), language="text")
 
 required_ok = bool(direction.strip() and audience.strip() and goal != "請選擇")
@@ -728,7 +726,7 @@ run_clicked = st.button(
     "🍽 幫我出菜單",
     type="primary",
     disabled=not (required_ok and confirmed),
-    use_container_width=True,
+    width="stretch",
 )
 if not required_ok:
     st.caption("填完主題、目標觀眾與拍片目的後，就可以開始。")
@@ -814,7 +812,7 @@ if "radar_result" in st.session_state:
                         key=f"apply_suggestion_{index}",
                         on_click=_apply_suggestion,
                         args=(suggestion.get("direction", ""), suggestion.get("hint", "")),
-                        use_container_width=True,
+                        width="stretch",
                     )
 
     export = build_public_export(
@@ -900,7 +898,7 @@ if "radar_result" in st.session_state:
         with st.expander("模型使用明細"):
             usage_rows = usage.get("records", [])
             if usage_rows:
-                st.dataframe(pd.DataFrame(usage_rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(usage_rows), width="stretch", hide_index=True)
 
         with st.expander("研究規劃與查詢診斷"):
             st.json(result.get("research_plan", {}))
@@ -932,7 +930,7 @@ if "radar_result" in st.session_state:
                     reverse=True,
                 )
             ]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
         with st.expander("影片證據拆解"):
             video_map = {video["id"]: video for video in result.get("pool", [])}

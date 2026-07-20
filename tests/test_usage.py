@@ -1,6 +1,7 @@
 import unittest
+from unittest.mock import Mock
 
-from llm_client import UsageLedger
+from llm_client import GeminiClient, UsageLedger, _parse_json_object
 
 
 class FakeUsage:
@@ -19,6 +20,31 @@ class UsageTests(unittest.TestCase):
         expected_usd = 40_000 * 0.25 / 1_000_000 + 7_000 * 1.5 / 1_000_000
         self.assertAlmostEqual(summary["estimated_usd"], expected_usd, places=6)
         self.assertAlmostEqual(summary["estimated_twd"], expected_usd * 32, places=2)
+
+    def test_json_parser_accepts_code_fence(self):
+        self.assertEqual(_parse_json_object('```json\n{"ok": true}\n```'), {"ok": True})
+
+    def test_generate_json_retries_truncated_response(self):
+        client = object.__new__(GeminiClient)
+        client._generate = Mock(
+            side_effect=[
+                type("Response", (), {"parsed": None, "text": '{"cards":[', "candidates": []})(),
+                type("Response", (), {"parsed": None, "text": '{"cards":[]}', "candidates": []})(),
+            ]
+        )
+        result = client.generate_json(
+            stage="menu",
+            model="test-model",
+            prompt="make menu",
+            schema={"type": "object"},
+            max_output_tokens=1_000,
+            thinking_level="medium",
+        )
+        self.assertEqual(result, {"cards": []})
+        self.assertEqual(client._generate.call_count, 2)
+        retry = client._generate.call_args_list[1].kwargs
+        self.assertGreater(retry["max_output_tokens"], 1_000)
+        self.assertEqual(retry["thinking_level"], "low")
 
 
 if __name__ == "__main__":
