@@ -864,6 +864,21 @@ def build_export_md(result, cfg):
             f"{fmt_num(v['view_count'])} | {fmt_num(v['subs'])} | {v['outlier_ratio']} | "
             f"{fmt_num(v['views_per_day'])} | {v['url']} |"
         )
+
+    _src_label = {"deep": "Gemini 看影片", "transcript": "字幕＋留言",
+                  "meta_only": "僅標題/數據/留言", "failed": "拆解失敗"}
+    breakdowns = result.get('breakdowns', [])
+    if breakdowns:
+        lines.append("\n## 附錄 C｜各影片拆解全文（想深入的人延伸看）\n")
+        for b in breakdowns:
+            v = b['video']
+            lines.append(
+                f"\n### {MARKET_LABEL[v['market']]}｜{v['title']}\n"
+                f"{v['channel']}｜觀看 {fmt_num(v['view_count'])}｜訂閱 {fmt_num(v['subs'])}"
+                f"｜爆款倍率 {v['outlier_ratio']} 倍｜片長 {v['duration_min']} 分"
+                f"｜依據：{_src_label.get(b.get('source', ''), b.get('source', ''))}\n"
+                f"{v['url']}\n\n{b['analysis']}\n"
+            )
     return "\n".join(lines)
 
 
