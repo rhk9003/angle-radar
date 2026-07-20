@@ -120,6 +120,17 @@ ANGLE_REPORT_SCHEMA = {
                     "angle_name": {"type": "string"},
                     "opportunity": {"type": "string"},
                     "signal": {"type": "string"},
+                    "internal_signal_type": {
+                        "type": "string",
+                        "enum": [
+                            "cross_context_adaptation",
+                            "audience_gap",
+                            "momentum_extension",
+                            "rising_topic",
+                            "other",
+                        ],
+                    },
+                    "route_note": {"type": "string"},
                     "evidence_video_ids": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -136,6 +147,8 @@ ANGLE_REPORT_SCHEMA = {
                     "angle_name",
                     "opportunity",
                     "signal",
+                    "internal_signal_type",
+                    "route_note",
                     "evidence_video_ids",
                     "comment_gap",
                     "confidence",
@@ -161,6 +174,13 @@ _EMOJI_RE = re.compile(
 
 def _plain_text(value: Any) -> str:
     return re.sub(r"\s+", " ", _EMOJI_RE.sub("", str(value or ""))).strip()
+
+
+def _public_generated_text(value: Any) -> str:
+    text = _plain_text(value)
+    for phrase in ("國內市場", "國外市場", "中文市場", "英文市場", "台灣市場"):
+        text = text.replace(phrase, "現有內容")
+    return text
 
 
 def _topic_context(topic: str, exclusions: str = "", references: str = "") -> str:
@@ -236,6 +256,63 @@ def breakdown_batch_prompt(packets: list[dict[str, Any]]) -> str:
 """.strip()
 
 
+def _signal_inventory(
+    pool_videos: list[dict[str, Any]],
+    breakdowns: list[dict[str, Any]],
+    rising_signals: list[dict[str, Any]],
+) -> dict[str, Any]:
+    breakdown_ids = {
+        str(item.get("video_id", "")) for item in breakdowns if item.get("video_id")
+    }
+    ranked = sorted(
+        pool_videos,
+        key=lambda item: (item.get("evidence_score", 0), item.get("views_per_day", 0)),
+        reverse=True,
+    )
+    adaptation_ids = [
+        str(video.get("id", ""))
+        for video in ranked
+        if video.get("market") == "en" and str(video.get("id", "")) in breakdown_ids
+    ][:8]
+    gap_sources = [
+        {
+            "video_id": str(item.get("video_id", "")),
+            "comment_gaps": item.get("comment_gaps", []),
+        }
+        for item in breakdowns
+        if item.get("video_id") and item.get("comment_gaps")
+    ]
+    rising_ids = list(
+        dict.fromkeys(
+            str(video_id)
+            for signal in rising_signals
+            for video_id in signal.get("source_ids", [])
+            if video_id
+        )
+    )
+    momentum_ids = [
+        str(video.get("id", ""))
+        for video in ranked
+        if video.get("id")
+        and int(video.get("view_count", 0) or 0) >= 3_000
+        and (
+            int(video.get("views_per_day", 0) or 0) >= 200
+            or (
+                int(video.get("baseline_sample_size", 0) or 0) >= 3
+                and float(video.get("outlier_ratio", 0) or 0) >= 2
+            )
+        )
+    ][:10]
+    momentum_ids = list(dict.fromkeys([*rising_ids, *momentum_ids]))[:10]
+    return {
+        "cross_context_adaptation_ids": adaptation_ids,
+        "audience_gap_sources": gap_sources,
+        "momentum_extension_ids": momentum_ids,
+        "rising_topic_ids": rising_ids,
+        "rising_signals": rising_signals,
+    }
+
+
 def angle_report_prompt(
     topic: str,
     selected_keywords: dict[str, list[dict[str, Any]]],
@@ -263,6 +340,7 @@ def angle_report_prompt(
             {
                 "id": video.get("id"),
                 "title": video.get("title"),
+                "language_group": video.get("market"),
                 "views": video.get("view_count"),
                 "views_per_day": video.get("views_per_day"),
                 "relative_baseline": video.get("outlier_ratio"),
@@ -278,7 +356,9 @@ def angle_report_prompt(
             "keywords": keyword_summary,
             "video_evidence": breakdowns,
             "candidate_videos": pool,
-            "early_signals": rising_signals,
+            "signal_inventory": _signal_inventory(
+                pool_videos, breakdowns, rising_signals
+            ),
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -294,13 +374,24 @@ def angle_report_prompt(
 規則：
 - angle_name 是清楚、可辨識的研究切角，不是聳動標題。
 - opportunity 說明這個切角真正要追問什麼，以及和泛泛談主題有何不同。
-- signal 只說素材中可觀察到的線索，不得把推測寫成已證實需求。
+- signal 必須寫出素材支持的具體研究結論，例如相對頻道基準、近期觀看速度、跨頻道出現、字幕內容或留言追問；禁止只寫「觀眾可能有興趣」。
+- internal_signal_type 是內部欄位，不會對使用者顯示。依 signal_inventory 分成：
+  - cross_context_adaptation：其他內容情境已成立，可重新詮釋成使用者自己的案例；不可逐字照搬。
+  - audience_gap：來源留言明確追問，但原內容尚未充分回答。
+  - momentum_extension：沿著高動能內容繼續拍，找下一題、反方、更新、續集或情境版。
+  - rising_topic：跨來源的早期抬頭訊號，還不等於已成熱門。
+  - other：有證據但不屬於以上四類。
+- route_note 說明如何把該線索轉成新的研究方向。這是公開字串，不能出現上述內部代碼、方法名稱或市場分組。
 - evidence_video_ids 放 1–3 個素材中真實存在的影片 id；來源不足就誠實降低 confidence。
 - comment_gap 若使用，只能逐字複製 evidence_video_ids 對應 breakdown 的 comment_gaps；沒有就填空字串。
 - caution 說明證據限制或使用者深化前應自行確認的事。
-- 角度要有差異，可涵蓋問句、卡點、爭議、相鄰題材、近期異動與來源中的未解問題；不要只改寫同一句話。
+- 若 signal_inventory 有足夠來源，{n_angles} 個切角至少包含：2 個 cross_context_adaptation、2 個 audience_gap、2 個 momentum_extension、1 個 rising_topic；剩餘名額再選最佳證據。某類證據不足才可少於此數，不能用 other 逃避分配。
+- audience_gap 的 comment_gap 不得為空；rising_topic 必須引用 signal_inventory.rising_topic_ids；另外兩類也必須引用各自清單內的來源。
+- momentum_extension 的 route_note 要直接說明「沿著哪個熱門內容，下一支可以接著談什麼」，不可只寫值得關注。
+- 角度要有差異，不要只改寫同一句話。同一來源可以支撐不同方向，但 route_note 必須明確不同。
 - 不要提供片名、腳本、開場、拍攝形式、發布順序、導購建議或完整拍片方案。
 - 不要向使用者揭露搜尋流程、評分方式、內部策略分類或市場分組。
+- 公開字串不要寫「國內市場」「國外市場」「英文市場」「中文市場」；只描述內容、觀眾問題與可追查的來源。
 - 公開字串禁止使用 emoji；全部使用繁體中文、短句，每個欄位最多兩句。
 """.strip()
 
@@ -309,11 +400,21 @@ def validate_angle_evidence(
     report: dict[str, Any],
     pool_videos: list[dict[str, Any]],
     breakdowns: list[dict[str, Any]],
+    rising_signals: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """把來源 ID 與留言缺口鎖回實際取得的證據。"""
     videos = {str(video.get("id", "")): video for video in pool_videos}
     breakdown_map = {
         str(breakdown.get("video_id", "")): breakdown for breakdown in breakdowns
+    }
+    inventory = _signal_inventory(pool_videos, breakdowns, rising_signals or [])
+    eligible = {
+        "cross_context_adaptation": set(inventory["cross_context_adaptation_ids"]),
+        "audience_gap": {
+            item["video_id"] for item in inventory["audience_gap_sources"]
+        },
+        "momentum_extension": set(inventory["momentum_extension_ids"]),
+        "rising_topic": set(inventory["rising_topic_ids"]),
     }
     validated_angles = []
     for angle in report.get("angles", []):
@@ -335,6 +436,16 @@ def validate_angle_evidence(
         }
         gap = _plain_text(angle.get("comment_gap", ""))
         angle["comment_gap"] = gap if gap in allowed_gaps else ""
+        signal_type = str(angle.get("internal_signal_type", "other"))
+        route_valid = signal_type == "other" or bool(
+            set(valid_ids) & eligible.get(signal_type, set())
+        )
+        if signal_type == "audience_gap" and not angle["comment_gap"]:
+            route_valid = False
+        if not route_valid:
+            angle["internal_signal_type"] = "other"
+            angle["route_note"] = "這個方向仍可研究，但本次資料不足以支持更明確的延伸判斷。"
+            angle["confidence"] = "low"
         validated_angles.append(angle)
 
     report["angles"] = validated_angles
@@ -342,33 +453,120 @@ def validate_angle_evidence(
 
 
 def _source_line(video: dict[str, Any]) -> str:
-    title = _plain_text(video.get("title", "參考影片"))
+    title = _public_generated_text(video.get("title", "參考影片"))
     details = [f"觀看 {fmt_num(video.get('view_count', 0))}"]
+    if int(video.get("views_per_day", 0) or 0) > 0:
+        details.append(f"日均約 {fmt_num(video.get('views_per_day', 0))}")
     if int(video.get("baseline_sample_size", 0) or 0) >= 3:
-        details.append(f"近期同頻道基準的 {video.get('outlier_ratio', 0)} 倍")
+        details.append(
+            f"近期同頻道基準的 {video.get('outlier_ratio', 0)} 倍"
+            f"（{video.get('baseline_sample_size', 0)} 支樣本）"
+        )
     return f"[{title}]({video.get('url', '')})｜{'｜'.join(details)}"
 
 
+_PUBLIC_SIGNAL_LABEL = {
+    "cross_context_adaptation": "已有題材的新版本",
+    "audience_gap": "觀眾未解問題",
+    "momentum_extension": "熱門內容的延伸",
+    "rising_topic": "正在抬頭的話題",
+    "other": "其他證據型切角",
+}
+
+_PUBLIC_ROUTE_LABEL = {
+    "cross_context_adaptation": "可轉成你的版本",
+    "audience_gap": "可以補上的回答",
+    "momentum_extension": "沿著熱門話題可以接著談",
+    "rising_topic": "值得提早研究",
+    "other": "可深入的方向",
+}
+
+
+def _rising_conclusion(
+    angle: dict[str, Any], rising_signals: list[dict[str, Any]]
+) -> str:
+    evidence_ids = set(map(str, angle.get("evidence_video_ids", [])))
+    for signal in rising_signals:
+        if evidence_ids & set(map(str, signal.get("source_ids", []))):
+            parts = [
+                f"近 60 天樣本有 {signal.get('recent_video_count', 0)} 支相關內容",
+                f"來自 {signal.get('recent_channel_count', 0)} 個不同頻道",
+                f"日均觀看中位數約 {fmt_num(signal.get('median_daily_velocity', 0))}",
+            ]
+            if signal.get("acceleration_vs_older"):
+                parts.append(f"約為較早樣本的 {signal.get('acceleration_vs_older')} 倍")
+            return "；".join(parts) + "。"
+    return ""
+
+
+def _content_conclusion(
+    angle: dict[str, Any], breakdowns: list[dict[str, Any]]
+) -> str:
+    breakdown_map = {
+        str(item.get("video_id", "")): item for item in breakdowns
+    }
+    for video_id in map(str, angle.get("evidence_video_ids", [])):
+        breakdown = breakdown_map.get(video_id, {})
+        parts = []
+        breakout = breakdown.get("breakout_reasons", [])
+        reusable = breakdown.get("reusable_angles", [])
+        if breakout:
+            parts.append(_public_generated_text(breakout[0]))
+        if reusable:
+            parts.append(f"可延伸為：{_public_generated_text(reusable[0])}")
+        if parts:
+            return "；".join(parts) + "。"
+    return ""
+
+
 def render_angle_report(
-    report: dict[str, Any], topic: str, pool_videos: list[dict[str, Any]]
+    report: dict[str, Any],
+    topic: str,
+    pool_videos: list[dict[str, Any]],
+    rising_signals: list[dict[str, Any]] | None = None,
+    breakdowns: list[dict[str, Any]] | None = None,
 ) -> str:
     videos = {str(video.get("id", "")): video for video in pool_videos}
-    lines = [f"# 「{_plain_text(topic)}」切角雷達", "", _plain_text(report.get("radar_summary", ""))]
+    signal_types = list(
+        dict.fromkeys(
+            str(angle.get("internal_signal_type", "other"))
+            for angle in report.get("angles", [])
+        )
+    )
+    coverage = "、".join(
+        _PUBLIC_SIGNAL_LABEL.get(signal_type, _PUBLIC_SIGNAL_LABEL["other"])
+        for signal_type in signal_types
+    )
+    lines = [
+        f"# 「{_plain_text(topic)}」切角雷達",
+        "",
+        "以下是值得探索的內容切角，不代表已證實的市場需求。",
+        "",
+        _public_generated_text(report.get("radar_summary", "")),
+        "",
+        f"**本次找到的線索**：{coverage}",
+    ]
     for index, angle in enumerate(report.get("angles", []), start=1):
         lines.extend(
             [
                 "",
-                f"## {index}. {_plain_text(angle.get('angle_name', '未命名切角'))}",
+                f"## {index}. {_public_generated_text(angle.get('angle_name', '未命名切角'))}",
                 "",
-                f"**這個切角**：{_plain_text(angle.get('opportunity', ''))}",
+                f"**這個切角**：{_public_generated_text(angle.get('opportunity', ''))}",
                 "",
-                f"**值得留意的訊號**：{_plain_text(angle.get('signal', ''))}",
+                f"**這個切角從哪裡挖到**：{_public_generated_text(angle.get('signal', ''))}",
+                "",
+                f"**{_PUBLIC_ROUTE_LABEL.get(str(angle.get('internal_signal_type', 'other')), _PUBLIC_ROUTE_LABEL['other'])}**："
+                f"{_public_generated_text(angle.get('route_note', ''))}",
             ]
         )
         if angle.get("comment_gap"):
             lines.extend(
-                ["", f"**觀眾留下的問題**：{_plain_text(angle.get('comment_gap', ''))}"]
+                ["", f"**觀眾留下的問題**：{_public_generated_text(angle.get('comment_gap', ''))}"]
             )
+        content_text = _content_conclusion(angle, breakdowns or [])
+        if content_text:
+            lines.extend(["", f"**來源內容結論**：{content_text}"])
         sources = [
             videos[video_id]
             for video_id in angle.get("evidence_video_ids", [])
@@ -379,12 +577,16 @@ def render_angle_report(
             lines.extend(f"- {_source_line(video)}" for video in sources)
         else:
             lines.extend(["", "**參考來源**：本次樣本沒有足夠直接來源。"])
+        if angle.get("internal_signal_type") == "rising_topic":
+            rising_text = _rising_conclusion(angle, rising_signals or [])
+            if rising_text:
+                lines.extend(["", f"**近期資料**：{rising_text}"])
         lines.extend(
             [
                 "",
-                f"**證據信心**：{CONFIDENCE_LABEL.get(angle.get('confidence'), '低')}",
+                f"**線索完整度**：{CONFIDENCE_LABEL.get(angle.get('confidence'), '低')}",
                 "",
-                f"**深化前先確認**：{_plain_text(angle.get('caution', ''))}",
+                f"**深化前先確認**：{_public_generated_text(angle.get('caution', ''))}",
             ]
         )
     return "\n".join(lines)
@@ -401,16 +603,19 @@ def angle_development_prompt(
     for video_id in angle.get("evidence_video_ids", []):
         video = videos.get(str(video_id))
         if video:
-            sources.append(f"- {_plain_text(video.get('title', ''))}：{video.get('url', '')}")
+            sources.append(
+                f"- {_public_generated_text(video.get('title', ''))}：{video.get('url', '')}"
+            )
     source_text = "\n".join(sources) or "- 暫無直接來源，請先把這個切角視為待驗證假設"
-    comment_gap = _plain_text(angle.get("comment_gap", "")) or "本次沒有足夠留言證據"
+    comment_gap = _public_generated_text(angle.get("comment_gap", "")) or "本次沒有足夠留言證據"
     return f"""
 我想把下面這個內容切角，發展成適合我的影片。請先閱讀我補充的資料，再給建議；不要自行假設我的經歷、觀眾或可用素材。
 
 原始主題：{_plain_text(topic)}
-這次要深化的切角：{_plain_text(angle.get('angle_name', ''))}
-切角說明：{_plain_text(angle.get('opportunity', ''))}
-目前看到的線索：{_plain_text(angle.get('signal', ''))}
+這次要深化的切角：{_public_generated_text(angle.get('angle_name', ''))}
+切角說明：{_public_generated_text(angle.get('opportunity', ''))}
+這個切角從哪裡挖到：{_public_generated_text(angle.get('signal', ''))}
+建議深化重點：{_public_generated_text(angle.get('route_note', ''))}
 觀眾留下的問題：{comment_gap}
 
 參考來源：
@@ -448,7 +653,7 @@ def render_breakdown(breakdown: dict[str, Any]) -> str:
         "**可延伸的角度**：" + "；".join(map(_plain_text, breakdown.get("reusable_angles", []))),
         "**留言缺口**："
         + ("；".join(map(_plain_text, breakdown.get("comment_gaps", []))) or "沒有足夠留言證據"),
-        f"**證據信心**：{CONFIDENCE_LABEL.get(breakdown.get('confidence'), '低')}",
+        f"**線索完整度**：{CONFIDENCE_LABEL.get(breakdown.get('confidence'), '低')}",
     ]
     return "\n\n".join(lines)
 
@@ -472,7 +677,7 @@ def build_public_export(
     for index, angle in enumerate(report.get("angles", []), start=1):
         lines.extend(
             [
-                f"## {index}. {_plain_text(angle.get('angle_name', '未命名切角'))}",
+                f"## {index}. {_public_generated_text(angle.get('angle_name', '未命名切角'))}",
                 "",
                 "```text",
                 angle_development_prompt(topic, angle, pool_videos),
@@ -483,8 +688,8 @@ def build_public_export(
     lines.extend(["---", "", "# 本次引用來源", ""])
     for video in sorted(cited, key=lambda item: item.get("evidence_score", 0), reverse=True):
         lines.append(
-            f"- [{_plain_text(video.get('title', ''))}]({video.get('url', '')})｜"
-            f"{_plain_text(video.get('channel', ''))}｜觀看 {fmt_num(video.get('view_count', 0))}"
+            f"- [{_public_generated_text(video.get('title', ''))}]({video.get('url', '')})｜"
+            f"{_public_generated_text(video.get('channel', ''))}｜觀看 {fmt_num(video.get('view_count', 0))}"
         )
     lines.extend(["", f"_生成時間：{created_at}_"])
     return "\n".join(lines)

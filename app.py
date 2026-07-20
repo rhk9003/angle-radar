@@ -445,9 +445,13 @@ def run_pipeline(
         angle_report["angles"] = angle_report.get("angles", [])[: cfg["n_angles"]]
         if not angle_report["angles"]:
             raise RuntimeError("模型沒有產出可用切角。")
-        angle_report = validate_angle_evidence(angle_report, all_videos, breakdowns)
+        angle_report = validate_angle_evidence(
+            angle_report, all_videos, breakdowns, rising_signals
+        )
         result["angle_report"] = angle_report
-        result["report"] = render_angle_report(angle_report, topic, all_videos)
+        result["report"] = render_angle_report(
+            angle_report, topic, all_videos, rising_signals, breakdowns
+        )
         result["usage"] = ledger.summary()
         result["youtube_usage"] = youtube.usage()
         result["youtube_errors"] = youtube.errors
