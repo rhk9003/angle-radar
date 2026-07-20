@@ -648,6 +648,41 @@ def ai_generate_menu(gemini_key, model_version, direction, extra, adjust_note,
     return gemini_text(gemini_key, prompt, model_version=model_version)
 
 
+def ai_suggest_inputs(gemini_key, model_version, direction, extra, menu, selected_kws):
+    """看這次的方向與菜單，建議 3 組『下次輸入怎麼寫會更準』的輸入。
+    回傳 [{direction, hint, reason}]，供使用者一鍵帶入輸入框後自行修改。"""
+    kw_line = "、".join(
+        [k["kw"] for m in ("en", "zh") for k in selected_kws.get(m, [])][:8]
+    ) or "（無）"
+    prompt = f"""
+使用者這次在「切角點單機」輸入的方向是：「{direction}」
+補充：{extra or "（無）"}
+系統據此選的關鍵字：{kw_line}
+產出的切角菜單（節錄）：
+{menu[:1800]}
+
+請站在「幫使用者把下次輸入寫得更好」的角度，給 3 組**更精準的輸入建議**。
+好的輸入通常：更具體的子題材／指定受眾或情境／指定內容形式，能撈到更聚焦、更能拍的參考。
+每組包含：
+- direction：建議填進「方向」欄的文字（直接可用，10-20 字，比原輸入更聚焦）
+- hint：建議填進「其他補充」欄的一句話（受眾/情境/形式，可留空字串）
+- reason：一句話說為什麼這樣改會更準（20 字內）
+
+避免跟原輸入雷同、避免空泛。回傳 JSON：
+{{"suggestions":[{{"direction":"...","hint":"...","reason":"..."}}]}}
+"""
+    data = gemini_json(gemini_key, prompt, model_version=model_version)
+    if not data or not isinstance(data.get("suggestions"), list):
+        return []
+    out = []
+    for s in data["suggestions"][:3]:
+        d = str(s.get("direction", "")).strip()
+        if d:
+            out.append({"direction": d, "hint": str(s.get("hint", "")).strip(),
+                        "reason": str(s.get("reason", "")).strip()})
+    return out
+
+
 # ==========================================
 # 5. 管線協調器
 # ==========================================
@@ -991,9 +1026,11 @@ direction = st.text_area(
     "🧭 你想切的方向（一個詞也行）",
     placeholder="例：口紅／面膜／增肌飲食／新手理財⋯⋯想拍什麼就點什麼",
     height=80,
+    key="direction_input",
 )
 
-with st.expander("🎯 讓切角更貼你（全部選填，切角會更準）"):
+with st.expander("🎯 讓切角更貼你（全部選填，切角會更準）",
+                 expanded=bool(st.session_state.get("freenote_input"))):
     col_a, col_b = st.columns(2)
     with col_a:
         who = st.text_input("我是誰／頻道在做什麼",
@@ -1009,7 +1046,8 @@ with st.expander("🎯 讓切角更貼你（全部選填，切角會更準）"):
             "不限", "教學解說", "實測／挑戰", "觀點評論", "vlog／情境短劇",
         ])
     free_note = st.text_input("其他補充",
-                              placeholder="不想做的題材、想模仿的頻道、片長偏好…")
+                              placeholder="不想做的題材、想模仿的頻道、片長偏好…",
+                              key="freenote_input")
 
 _extra_parts = []
 if who.strip():
@@ -1069,12 +1107,45 @@ if run_clicked:
                     st.session_state["_wl_remaining"] = int(_rf.get("remaining", 0) or 0)
                 st.info("這次沒跑成功，已把扣掉的次數退還給你。")
 
+def _apply_suggestion(direction_text, hint_text):
+    # on_click 回呼：在 widget 重建前寫入，安全帶入輸入框（不送出、可再修改）
+    st.session_state["direction_input"] = direction_text
+    st.session_state["freenote_input"] = hint_text
+    st.toast("已帶入輸入框，可修改後再按「🍽 幫我出菜單」", icon="✍️")
+
+
 # ---- 結果呈現（從 session_state 讀，rerun 不消失）----
 if 'radar_result' in st.session_state:
     result = st.session_state['radar_result']
     st.markdown("---")
 
     st.markdown(result['report'])
+
+    # 🔧 AI 看結果，建議下次輸入怎麼寫更準（一鍵帶入、不自動送出）
+    if 'input_suggestions' not in result:
+        _scfg = result.get('cfg', {})
+        with st.spinner("順便想幾個能讓下次更準的輸入建議…"):
+            result['input_suggestions'] = ai_suggest_inputs(
+                GEMINI_API_KEY, PIPELINE_MODEL,
+                _scfg.get('direction', ''), _scfg.get('extra', ''),
+                result['report'], result['selected_kws'])
+        st.session_state['radar_result'] = result
+    _sugs = result.get('input_suggestions') or []
+    if _sugs:
+        with st.container(border=True):
+            st.markdown("#### 🔧 想讓下次更準？試試這樣輸入")
+            st.caption("點「帶入」會填進最上方的輸入框，你可以再改，**不會自動送出**。")
+            for _i, _s in enumerate(_sugs):
+                _c1, _c2 = st.columns([5, 1])
+                with _c1:
+                    st.markdown(f"**{_s['direction']}**"
+                                + (f"　🙋 {_s['hint']}" if _s.get('hint') else ""))
+                    if _s.get('reason'):
+                        st.caption(f"↳ {_s['reason']}")
+                with _c2:
+                    st.button("帶入", key=f"apply_sug_{_i}", use_container_width=True,
+                              on_click=_apply_suggestion,
+                              args=(_s['direction'], _s.get('hint', '')))
 
     st.download_button(
         "📥 下載菜單（含資料附錄）",
