@@ -50,9 +50,17 @@ WHITELIST_API_KEY = "與 Code.gs 內 API_KEY 一模一樣的密鑰"
 
 之後在 app 裡用該碼登入 → 側邊欄顯示「剩餘次數 20」→ 每出一份菜單扣 1；跑失敗會自動退還。
 
+使用者送出「Angle Radar vs 一般 AI」比較回饋後，程式會自動建立 `feedback` 分頁，欄位為：
+
+| timestamp | code | name | direction | verdict | note |
+|---|---|---|---|---|---|
+
+此分頁可用來統計 Angle Radar 的真實勝率，不會影響剩餘次數。
+
 ## 運作邏輯
 
 - 登入：`check`（不扣）→ 顯示剩餘
 - 出菜單：`consume`（原子扣 1；remaining>0 才扣得動，用 LockService 防並發重扣）
 - 跑失敗：`refund`（加 1 退還）
+- 比較回饋：`feedback`（寫入 `feedback` 分頁，不扣次數）
 - 加值：你直接在 Sheet 把 `remaining` 數字改大即可，即時生效

@@ -1,6 +1,6 @@
 streamlit>=1.30.0
-pandas
-google-api-python-client
-google-generativeai
-youtube-transcript-api
-requests
+pandas>=2.0
+google-api-python-client>=2.0
+google-genai>=1.0
+youtube-transcript-api>=1.0
+requests>=2.31
