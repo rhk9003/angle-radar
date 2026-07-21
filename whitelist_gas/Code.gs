@@ -10,6 +10,7 @@
  *   action=consume ：原子扣 1（remaining>0 才扣得動；否則回 depleted）
  *   action=refund  ：加 1（點單失敗時退還）
  *   action=feedback：記錄切角新穎度與可用性回饋
+ *   action=log_usage：記錄每次分析的輸入、輸出、狀態與時間
  * 回傳 JSON：{ok, name, remaining, deep, error?}
  *
  * 安裝見 SETUP.md
@@ -48,6 +49,10 @@ function handle_(e) {
           appendFeedback_(code, name, p.direction, p.verdict, p.note);
           return json_({ ok: true });
         }
+        if (action === 'log_usage') {
+          appendUsageLog_(code, name, p);
+          return json_({ ok: true });
+        }
         if (action === 'consume') {
           if (remaining <= 0) return json_({ ok: false, error: 'depleted', name: name, remaining: 0, deep: deep });
           remaining -= 1;
@@ -69,9 +74,31 @@ function handle_(e) {
   }
 }
 
-function safeCell_(value) {
-  const text = String(value || '').slice(0, 1000);
+function safeCell_(value, maxLength) {
+  const text = String(value || '').slice(0, maxLength || 1000);
   return /^[=+\-@]/.test(text) ? "'" + text : text;
+}
+
+function appendUsageLog_(code, name, p) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName('usage_logs');
+  if (!sh) {
+    sh = ss.insertSheet('usage_logs');
+    sh.appendRow([
+      'timestamp', 'request_id', 'started_at', 'completed_at', 'duration_seconds',
+      'code', 'name', 'status', 'quota_consumed', 'quota_refunded', 'input_mode',
+      'input', 'exclusions', 'output', 'error'
+    ]);
+    sh.setFrozenRows(1);
+  }
+  sh.appendRow([
+    new Date(), safeCell_(p.request_id), safeCell_(p.started_at),
+    safeCell_(p.completed_at), safeCell_(p.duration_seconds), safeCell_(code),
+    safeCell_(name), safeCell_(p.status), safeCell_(p.quota_consumed),
+    safeCell_(p.quota_refunded), safeCell_(p.input_mode), safeCell_(p.input, 10000),
+    safeCell_(p.exclusions, 10000), safeCell_(p.output, 49000),
+    safeCell_(p.error, 5000)
+  ]);
 }
 
 function appendFeedback_(code, name, direction, verdict, note) {
