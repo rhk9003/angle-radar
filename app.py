@@ -694,7 +694,7 @@ def run_pipeline(
             ),
             schema=RESEARCH_SYNTHESIS_SCHEMA,
             max_output_tokens=3_600,
-            thinking_level="low",
+            thinking_level=None,
             temperature=0.2,
         )
         synthesis = validate_research_synthesis(

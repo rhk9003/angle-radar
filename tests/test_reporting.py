@@ -2,6 +2,7 @@ import unittest
 
 from reporting import (
     BREAKDOWN_BATCH_SCHEMA,
+    RESEARCH_SYNTHESIS_SCHEMA,
     angle_development_prompt,
     angle_report_prompt,
     keyword_reflow_prompt,
@@ -58,6 +59,12 @@ class ReportingTests(unittest.TestCase):
         videos = BREAKDOWN_BATCH_SCHEMA["properties"]["videos"]
         self.assertEqual(videos["maxItems"], 4)
         self.assertNotIn("audience_questions", videos["items"]["properties"])
+
+    def test_research_schema_uses_one_flat_findings_array(self):
+        self.assertEqual(list(RESEARCH_SYNTHESIS_SCHEMA["properties"]), ["findings"])
+        finding = RESEARCH_SYNTHESIS_SCHEMA["properties"]["findings"]
+        self.assertEqual(finding["maxItems"], 14)
+        self.assertNotIn("layers", finding["items"]["properties"])
 
     def test_development_prompt_is_actionable_without_internal_method(self):
         prompt = angle_development_prompt(
@@ -161,6 +168,60 @@ class ReportingTests(unittest.TestCase):
         )
         self.assertEqual(checked["cross_layer_insights"][0]["insight_id"], "I1")
 
+    def test_flat_synthesis_is_expanded_and_source_validated(self):
+        raw = {
+            "findings": [
+                {
+                    "item_id": "D7",
+                    "item_type": "demand",
+                    "finding": "搜尋詞指向收費時機",
+                    "detail": "不同問句都在問第一次收費",
+                    "evidence_keywords": ["第一次收費"],
+                    "support_ids": [],
+                    "source_video_ids": ["video-1"],
+                    "comment_refs": [],
+                    "confidence": "medium",
+                },
+                {
+                    "item_id": "S9",
+                    "item_type": "supply",
+                    "finding": "供給少談判斷點",
+                    "detail": "兩支片都只談收入",
+                    "evidence_keywords": [],
+                    "support_ids": [],
+                    "source_video_ids": ["video-1", "video-2"],
+                    "comment_refs": [],
+                    "confidence": "medium",
+                },
+                {
+                    "item_id": "I4",
+                    "item_type": "cross",
+                    "finding": "收費時機是可用缺口",
+                    "detail": "可拍成具體判斷題",
+                    "evidence_keywords": [],
+                    "support_ids": ["D7", "S9"],
+                    "source_video_ids": ["video-1", "video-2", "fake"],
+                    "comment_refs": [],
+                    "confidence": "medium",
+                },
+            ]
+        }
+        checked = validate_research_synthesis(
+            raw,
+            [{"id": "video-1"}, {"id": "video-2"}],
+            {},
+        )
+        self.assertEqual(checked["demand_patterns"][0]["insight_id"], "D1")
+        self.assertEqual(checked["supply_patterns"][0]["insight_id"], "S1")
+        self.assertEqual(
+            checked["cross_layer_insights"][0]["support_pattern_ids"],
+            ["D1", "S1"],
+        )
+        self.assertEqual(
+            checked["cross_layer_insights"][0]["source_video_ids"],
+            ["video-1", "video-2"],
+        )
+
     def test_final_angle_sources_are_locked_to_validated_insights(self):
         report = {
             "radar_summary": "可以優先回答第一次收費。",
@@ -215,10 +276,10 @@ class ReportingTests(unittest.TestCase):
             {"video-1": [{"ref": "video-1:c1", "text": "何時能收費？"}]},
             [],
         )
-        self.assertIn("demand_patterns", prompt)
-        self.assertIn("supply_patterns", prompt)
-        self.assertIn("audience_patterns", prompt)
-        self.assertIn("support_pattern_ids", prompt)
+        self.assertIn("item_type=demand", prompt)
+        self.assertIn("item_type=supply", prompt)
+        self.assertIn("item_type=audience", prompt)
+        self.assertIn("support_ids", prompt)
         self.assertIn("至少引用 2 支影片", prompt)
 
     def test_public_report_is_an_action_card_not_a_research_report(self):
