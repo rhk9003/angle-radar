@@ -36,7 +36,6 @@ from reporting import (
     KEYWORD_REFLOW_SCHEMA,
     KEYWORD_PLAN_SCHEMA,
     RELEVANCE_SCHEMA,
-    RESEARCH_SYNTHESIS_SCHEMA,
     angle_development_prompt,
     angle_report_prompt,
     breakdown_batch_prompt,
@@ -692,7 +691,9 @@ def run_pipeline(
                 compact_comments,
                 rising_signals,
             ),
-            schema=RESEARCH_SYNTHESIS_SCHEMA,
+            # 這一階段的內容已由本地驗證器鎖定來源；不送
+            # response_schema，避免 Gemini 對複合歸納請求回報通用 400。
+            schema=None,
             max_output_tokens=3_600,
             thinking_level=None,
             temperature=0.2,

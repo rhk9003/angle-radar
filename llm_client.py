@@ -70,7 +70,7 @@ def _finish_reason(response: Any) -> str:
 
 def _append_json_retry_instruction(contents: Any) -> Any:
     instruction = (
-        "上一次回覆無法完整解析。請縮短每個文字欄位，嚴格依 schema 輸出完整 JSON；"
+        "上一次回覆無法完整解析。請縮短每個文字欄位，嚴格依指定格式輸出完整 JSON；"
         "只能輸出 JSON，並優先確保所有括號閉合。"
     )
     if isinstance(contents, str):
@@ -259,7 +259,7 @@ class GeminiClient:
         model: str,
         prompt: str | None = None,
         contents: Any | None = None,
-        schema: dict[str, Any],
+        schema: dict[str, Any] | None,
         max_output_tokens: int,
         thinking_level: str | None = "low",
         temperature: float = 0.2,

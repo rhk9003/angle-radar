@@ -81,6 +81,30 @@ class UsageTests(unittest.TestCase):
         self.assertGreater(retry["max_output_tokens"], 1_000)
         self.assertEqual(retry["thinking_level"], "low")
 
+    def test_generate_json_can_parse_prompt_only_json_without_schema(self):
+        client = object.__new__(GeminiClient)
+        client._generate = Mock(
+            return_value=type(
+                "Response",
+                (),
+                {
+                    "parsed": None,
+                    "text": '```json\n{"findings":[]}\n```',
+                    "candidates": [],
+                },
+            )()
+        )
+        result = client.generate_json(
+            stage="research",
+            model="test-model",
+            prompt="return JSON",
+            schema=None,
+            max_output_tokens=1_000,
+            thinking_level=None,
+        )
+        self.assertEqual(result, {"findings": []})
+        self.assertIsNone(client._generate.call_args.kwargs["schema"])
+
 
 if __name__ == "__main__":
     unittest.main()
