@@ -323,11 +323,15 @@ def run_pipeline(
     cache = JsonTTLCache()
     gemini = GeminiClient(cfg["gemini_key"], ledger)
     youtube = YouTubeData(cfg["yt_key"], cache)
+    input_mode = str(cfg.get("input_mode", "idea"))
+    seed_input = topic.strip()
     result: dict[str, Any] = {
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "topic": topic,
         "exclusions": exclusions,
         "references": references,
+        "input_mode": input_mode,
+        "seed_input": seed_input,
         "cfg": {
             key: value
             for key, value in cfg.items()
@@ -336,10 +340,40 @@ def run_pipeline(
         "collection_stats": {},
     }
     try:
+        source_context: dict[str, Any] | None = None
+        if input_mode == "source":
+            source_ids = parse_youtube_video_ids(seed_input)
+            if source_ids:
+                source_videos = youtube.videos_by_ids(source_ids[:1], "zh")
+                if not source_videos:
+                    raise RuntimeError(
+                        "無法讀取這支 YouTube 影片，請確認連結公開且 API Key 可用。"
+                    )
+                source_video = source_videos[0]
+                topic = str(source_video.get("title", "")).strip() or seed_input
+                references = seed_input
+                source_context = {
+                    "title": topic,
+                    "description": str(source_video.get("description", ""))[:500],
+                    "tags": source_video.get("tags", [])[:12],
+                }
+                result["source_video"] = source_video
+            else:
+                topic = seed_input
+                references = seed_input
+                source_context = {"provided_video_title": seed_input}
+            result["topic"] = topic
+            result["references"] = references
+
         plan = gemini.generate_json(
             stage="關鍵字起點生成",
             model=cfg["pipeline_model"],
-            prompt=keyword_plan_prompt(topic, exclusions, references),
+            prompt=keyword_plan_prompt(
+                topic,
+                exclusions,
+                references,
+                source_context=source_context,
+            ),
             schema=KEYWORD_PLAN_SCHEMA,
             max_output_tokens=1_400,
             thinking_level="low",
@@ -745,7 +779,7 @@ def run_pipeline(
 
 
 st.title("切角雷達")
-st.caption("輸入一個主題，直接拿到可以拍什麼、怎麼拍，以及怎麼和現有內容拉開差異。")
+st.caption("從一個構想，或一支你看到的內容開始，找到可以拍什麼、怎麼拍與差異化。")
 
 has_secret_keys = bool(_secret("GEMINI_API_KEY") and _secret("YOUTUBE_API_KEY"))
 with st.sidebar:
@@ -806,22 +840,37 @@ with st.sidebar:
         VIDEO_TYPE = "全部"
 
 
-topic = st.text_area(
-    "你想拍什麼？",
-    placeholder="例：想成為命理師，或把命理發展成工作",
-    height=96,
-    key="topic_input",
+input_mode = st.radio(
+    "研究起點",
+    ["idea", "source"],
+    format_func=lambda value: (
+        "我有一個構想" if value == "idea" else "我有影片標題或連結"
+    ),
+    horizontal=True,
+    key="input_mode",
 )
+if input_mode == "idea":
+    topic = st.text_area(
+        "你想拍什麼？",
+        placeholder="例：想成為命理師，或把命理發展成工作",
+        height=96,
+        key="topic_input",
+    )
+    references = ""
+else:
+    topic = st.text_area(
+        "貼上影片標題或 YouTube 連結",
+        placeholder="例：命理師第一次收費怎麼開口，或 https://youtu.be/…",
+        height=96,
+        key="source_input",
+    )
+    references = topic
+    st.caption("這支內容只是研究起點；後續仍會搜尋、比較多支影片與留言。")
 with st.expander("選填：縮小範圍"):
     exclusions = st.text_input(
         "不想看到什麼",
         placeholder="例：不要靈異故事、不要只談占卜準不準",
         key="exclusions_input",
-    )
-    references = st.text_input(
-        "已有的參考內容",
-        placeholder="可以貼一支或多支 YouTube 影片網址；沒有就留空",
-        key="references_input",
     )
 
 run_clicked = st.button(
@@ -864,6 +913,7 @@ if run_clicked:
                 "window_days": WINDOW_DAYS,
                 "min_views": MIN_VIEWS,
                 "video_type": VIDEO_TYPE,
+                "input_mode": input_mode,
             }
             try:
                 pipeline_result = run_pipeline(
@@ -889,6 +939,17 @@ if run_clicked:
 if "radar_result" in st.session_state:
     result = st.session_state["radar_result"]
     st.markdown("---")
+    if result.get("input_mode") == "source":
+        source_video = result.get("source_video", {})
+        if source_video.get("url"):
+            st.caption(
+                f"研究起點：[{source_video.get('title', result['topic'])}]"
+                f"({source_video['url']})"
+            )
+        else:
+            st.caption(
+                f"研究起點：影片標題「{result.get('seed_input', result['topic'])}」"
+            )
     st.markdown(f"# 「{result['topic']}」可以怎麼拍")
     st.markdown(result["angle_report"].get("radar_summary", ""))
     for index, angle in enumerate(result["angle_report"].get("angles", []), start=1):

@@ -104,6 +104,20 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("最多選 4 個", prompt)
         self.assertIn("不可自創", prompt)
 
+    def test_source_title_is_a_seed_not_a_competitor_brief(self):
+        from reporting import keyword_plan_prompt
+
+        prompt = keyword_plan_prompt(
+            "命理師第一次收費",
+            source_context={
+                "title": "命理師第一次收費",
+                "tags": ["命理創業", "收費"],
+            },
+        )
+        self.assertIn("研究起點來自一支內容", prompt)
+        self.assertIn("用來理解題意與產生搜尋詞的 seed", prompt)
+        self.assertIn("不是要對打的競品", prompt)
+
     def test_synthesis_validation_requires_real_cross_layer_support(self):
         raw = {
             "demand_patterns": [
