@@ -45,7 +45,11 @@ class YouTubeData:
 
     def usage(self) -> dict[str, int]:
         with self._lock:
-            return dict(self._usage)
+            usage = dict(self._usage)
+            usage["estimated_quota_units"] = usage.get(
+                "search_calls", 0
+            ) * 100 + usage.get("data_calls", 0)
+            return usage
 
     def suggestions(self, keyword: str, lang: str) -> list[tuple[str, int]]:
         key = f"autocomplete:{stable_hash([keyword, lang])}"
@@ -78,7 +82,9 @@ class YouTubeData:
     def autocomplete_batch(self, queries: list[str], lang: str) -> dict[str, int]:
         found: dict[str, int] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            futures = [executor.submit(self.suggestions, query, lang) for query in queries]
+            futures = [
+                executor.submit(self.suggestions, query, lang) for query in queries
+            ]
             for future in concurrent.futures.as_completed(futures):
                 try:
                     for term, score in future.result():
@@ -138,7 +144,10 @@ class YouTubeData:
             if seed.strip():
                 pool.setdefault(seed.strip(), (0, 1))
         ranked = sorted(
-            ((term, score, round_number) for term, (score, round_number) in pool.items()),
+            (
+                (term, score, round_number)
+                for term, (score, round_number) in pool.items()
+            ),
             key=lambda item: (-item[1], item[2], len(item[0])),
         )
         return ranked[:max_pool], log
@@ -151,6 +160,7 @@ class YouTubeData:
         max_results: int,
         order: str = "relevance",
     ) -> list[dict[str, Any]]:
+        max_results = max(1, min(int(max_results), 50))
         key = f"search:{stable_hash([query, market, published_within_days, max_results, order])}"
         cached = self.cache.get(key)
         if cached is not None:
@@ -162,7 +172,9 @@ class YouTubeData:
             datetime.now(timezone.utc) - timedelta(days=published_within_days)
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
-            service = build("youtube", "v3", developerKey=self.api_key, cache_discovery=False)
+            service = build(
+                "youtube", "v3", developerKey=self.api_key, cache_discovery=False
+            )
             search_response = (
                 service.search()
                 .list(
@@ -181,6 +193,9 @@ class YouTubeData:
             video_ids = [
                 item["id"]["videoId"] for item in search_response.get("items", [])
             ]
+            search_ranks = {
+                video_id: index for index, video_id in enumerate(video_ids, start=1)
+            }
             if not video_ids:
                 self.cache.set(key, [], 21_600)
                 return []
@@ -199,6 +214,9 @@ class YouTubeData:
                         "id": item["id"],
                         "title": snippet.get("title", ""),
                         "description": (snippet.get("description") or "")[:500],
+                        "tags": [str(tag) for tag in snippet.get("tags", [])[:20]],
+                        "default_language": snippet.get("defaultAudioLanguage")
+                        or snippet.get("defaultLanguage", ""),
                         "channel": snippet.get("channelTitle", ""),
                         "channel_id": snippet.get("channelId", ""),
                         "publish_time": snippet.get("publishedAt", ""),
@@ -211,6 +229,7 @@ class YouTubeData:
                         "url": f"https://www.youtube.com/watch?v={item['id']}",
                         "source_keyword": query,
                         "search_order": order,
+                        "search_rank": search_ranks.get(item["id"], 0),
                         "market": market,
                     }
                 )
@@ -218,6 +237,74 @@ class YouTubeData:
             return result
         except Exception as exc:
             self.errors.append(f"search:{query}:{exc}")
+            return []
+
+    def videos_by_ids(
+        self, video_ids: list[str], market: str = "zh"
+    ) -> list[dict[str, Any]]:
+        """讀取使用者明確提供的參考影片，讓網址真的進入證據流程。"""
+        ids = list(dict.fromkeys(str(video_id) for video_id in video_ids if video_id))[
+            :50
+        ]
+        if not ids:
+            return []
+        key = f"videos_by_ids:{stable_hash([ids, market])}"
+        cached = self.cache.get(key)
+        if cached is not None:
+            self._hit()
+            return cached
+        try:
+            service = build(
+                "youtube", "v3", developerKey=self.api_key, cache_discovery=False
+            )
+            response = (
+                service.videos()
+                .list(part="snippet,statistics,contentDetails", id=",".join(ids))
+                .execute()
+            )
+            self._used("data_calls")
+            output = []
+            for item in response.get("items", []):
+                snippet = item.get("snippet", {})
+                statistics = item.get("statistics", {})
+                language_code = str(
+                    snippet.get("defaultAudioLanguage")
+                    or snippet.get("defaultLanguage", "")
+                ).lower()
+                detected_market = (
+                    "en"
+                    if language_code.startswith("en")
+                    else "zh"
+                    if language_code.startswith("zh")
+                    else market
+                )
+                output.append(
+                    {
+                        "id": item["id"],
+                        "title": snippet.get("title", ""),
+                        "description": (snippet.get("description") or "")[:500],
+                        "tags": [str(tag) for tag in snippet.get("tags", [])[:20]],
+                        "default_language": language_code,
+                        "channel": snippet.get("channelTitle", ""),
+                        "channel_id": snippet.get("channelId", ""),
+                        "publish_time": snippet.get("publishedAt", ""),
+                        "view_count": int(statistics.get("viewCount", 0) or 0),
+                        "like_count": int(statistics.get("likeCount", 0) or 0),
+                        "comment_count": int(statistics.get("commentCount", 0) or 0),
+                        "duration_min": parse_iso_duration(
+                            item.get("contentDetails", {}).get("duration", "")
+                        ),
+                        "url": f"https://www.youtube.com/watch?v={item['id']}",
+                        "source_keyword": "使用者參考",
+                        "search_order": "reference",
+                        "market": detected_market,
+                        "is_reference": True,
+                    }
+                )
+            self.cache.set(key, output, 43_200)
+            return output
+        except Exception as exc:
+            self.errors.append(f"videos_by_ids:{exc}")
             return []
 
     def channel_profiles(self, channel_ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -231,7 +318,9 @@ class YouTubeData:
             return cached
         profiles: dict[str, dict[str, Any]] = {}
         try:
-            service = build("youtube", "v3", developerKey=self.api_key, cache_discovery=False)
+            service = build(
+                "youtube", "v3", developerKey=self.api_key, cache_discovery=False
+            )
             for index in range(0, len(ids), 50):
                 response = (
                     service.channels()
@@ -271,10 +360,16 @@ class YouTubeData:
         if not playlist_id:
             return []
         try:
-            service = build("youtube", "v3", developerKey=self.api_key, cache_discovery=False)
+            service = build(
+                "youtube", "v3", developerKey=self.api_key, cache_discovery=False
+            )
             playlist_response = (
                 service.playlistItems()
-                .list(part="contentDetails", playlistId=playlist_id, maxResults=max_results)
+                .list(
+                    part="contentDetails",
+                    playlistId=playlist_id,
+                    maxResults=max_results,
+                )
                 .execute()
             )
             self._used("data_calls")
@@ -317,12 +412,19 @@ class YouTubeData:
         channel_ids: list[str],
         max_results: int = 15,
     ) -> dict[str, list[dict[str, Any]]]:
-        targets = [channel_id for channel_id in dict.fromkeys(channel_ids) if channel_id in profiles]
+        targets = [
+            channel_id
+            for channel_id in dict.fromkeys(channel_ids)
+            if channel_id in profiles
+        ]
         output: dict[str, list[dict[str, Any]]] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
             futures = {
                 executor.submit(
-                    self._recent_for_channel, channel_id, profiles[channel_id], max_results
+                    self._recent_for_channel,
+                    channel_id,
+                    profiles[channel_id],
+                    max_results,
                 ): channel_id
                 for channel_id in targets
             }
@@ -334,20 +436,25 @@ class YouTubeData:
                     output[channel_id] = []
         return output
 
-    def top_comments(self, video_id: str, max_results: int = 20) -> list[dict[str, Any]]:
-        key = f"comments:{stable_hash([video_id, max_results])}"
+    def _comments_for_order(
+        self, video_id: str, order: str, max_results: int
+    ) -> list[dict[str, Any]]:
+        max_results = max(1, min(int(max_results), 100))
+        key = f"comments_v2:{stable_hash([video_id, order, max_results])}"
         cached = self.cache.get(key)
         if cached is not None:
             self._hit()
             return cached
         try:
-            service = build("youtube", "v3", developerKey=self.api_key, cache_discovery=False)
+            service = build(
+                "youtube", "v3", developerKey=self.api_key, cache_discovery=False
+            )
             response = (
                 service.commentThreads()
                 .list(
                     part="snippet,replies",
                     videoId=video_id,
-                    order="relevance",
+                    order=order,
                     maxResults=max_results,
                     textFormat="plainText",
                 )
@@ -357,27 +464,96 @@ class YouTubeData:
             comments = []
             for item in response.get("items", []):
                 thread = item.get("snippet", {})
-                snippet = thread.get("topLevelComment", {}).get("snippet", {})
+                top_comment = thread.get("topLevelComment", {})
+                snippet = top_comment.get("snippet", {})
+                comment_id = str(top_comment.get("id", ""))
                 reply_samples = []
                 for reply in item.get("replies", {}).get("comments", [])[:3]:
                     reply_text = re.sub(
-                        r"\s+", " ", str(reply.get("snippet", {}).get("textDisplay", ""))
+                        r"\s+",
+                        " ",
+                        str(reply.get("snippet", {}).get("textDisplay", "")),
                     ).strip()
                     if reply_text:
                         reply_samples.append(reply_text[:220])
                 comments.append(
                     {
+                        "comment_id": comment_id,
+                        "ref": f"{video_id}:{comment_id}" if comment_id else "",
                         "text": snippet.get("textDisplay", ""),
                         "likes": int(snippet.get("likeCount", 0) or 0),
                         "replies": int(thread.get("totalReplyCount", 0) or 0),
                         "reply_samples": reply_samples,
+                        "published_at": snippet.get("publishedAt", ""),
+                        "source_orders": [order],
                     }
                 )
             self.cache.set(key, comments, 43_200)
             return comments
         except Exception as exc:
-            self.errors.append(f"comments:{video_id}:{exc}")
+            self.errors.append(f"comments:{video_id}:{order}:{exc}")
             return []
+
+    def sample_comments(
+        self,
+        video_id: str,
+        max_results_per_order: int = 40,
+        orders: tuple[str, ...] = ("relevance", "time"),
+    ) -> list[dict[str, Any]]:
+        """同時取高互動與近期留言；一個排序只取一頁，成本固定可預測。"""
+        batches: list[list[dict[str, Any]]] = []
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(len(orders), 2)
+        ) as executor:
+            futures = [
+                executor.submit(
+                    self._comments_for_order,
+                    video_id,
+                    order,
+                    max_results_per_order,
+                )
+                for order in orders
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    batches.append(future.result())
+                except Exception:
+                    continue
+        by_key: dict[str, dict[str, Any]] = {}
+        for comment in [item for batch in batches for item in batch]:
+            key = (
+                str(comment.get("comment_id", ""))
+                or re.sub(r"\s+", " ", str(comment.get("text", ""))).strip().lower()
+            )
+            if not key:
+                continue
+            if key not in by_key:
+                by_key[key] = dict(comment)
+                continue
+            existing = by_key[key]
+            existing["source_orders"] = list(
+                dict.fromkeys(
+                    [
+                        *existing.get("source_orders", []),
+                        *comment.get("source_orders", []),
+                    ]
+                )
+            )
+            existing["reply_samples"] = list(
+                dict.fromkeys(
+                    [
+                        *existing.get("reply_samples", []),
+                        *comment.get("reply_samples", []),
+                    ]
+                )
+            )[:3]
+        return list(by_key.values())
+
+    def top_comments(
+        self, video_id: str, max_results: int = 20
+    ) -> list[dict[str, Any]]:
+        """向下相容的單排序入口。新研究流程使用 sample_comments。"""
+        return self._comments_for_order(video_id, "relevance", max_results)
 
     def transcript_segments(self, video_id: str, market: str) -> list[dict[str, Any]]:
         key = f"transcript:{stable_hash([video_id, market])}"
@@ -397,7 +573,9 @@ class YouTubeData:
                 fetched = YouTubeTranscriptApi().fetch(video_id, languages=languages)
                 snippets = getattr(fetched, "snippets", fetched)
             except AttributeError:
-                snippets = YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
+                snippets = YouTubeTranscriptApi.get_transcript(
+                    video_id, languages=languages
+                )
             output = []
             for snippet in snippets:
                 if hasattr(snippet, "text"):
@@ -411,7 +589,11 @@ class YouTubeData:
                 clean = re.sub(r"\s+", " ", str(text)).strip()
                 if clean:
                     output.append(
-                        {"text": clean, "start": float(start or 0), "duration": float(duration or 0)}
+                        {
+                            "text": clean,
+                            "start": float(start or 0),
+                            "duration": float(duration or 0),
+                        }
                     )
             self.cache.set(key, output, 604_800)
             return output

@@ -3,23 +3,60 @@ import unittest
 from reporting import (
     angle_development_prompt,
     angle_report_prompt,
+    keyword_reflow_prompt,
     render_angle_report,
+    research_synthesis_prompt,
     validate_angle_evidence,
+    validate_research_synthesis,
 )
 
 
+def action_card(**overrides):
+    value = {
+        "angle_name": "第一批客戶從哪裡來",
+        "you_can_make": "你可以拍第一次向陌生人收費前，要先完成哪三個驗證。",
+        "core_message": "把免費練習、試收費與正式收費拆成三個判斷點。",
+        "how_to_make": "用三個常見情境做判斷題，不假設你已有個案資料。",
+        "opening_line": "真正難的不是學會算，而是第一次開口收錢。",
+        "why_worth_making": "多支內容都談學習，但留言反覆追問何時能收費。",
+        "differentiation": "現有內容多談收入，這支改談第一次收費前的判斷。",
+        "avoid": "不要拍成沒有條件與案例的收入大公開。",
+        "internal_signal_type": "audience_gap",
+        "evidence_insight_ids": ["I1"],
+        "evidence_video_ids": ["video-1"],
+        "comment_refs": ["video-1:c1"],
+        "confidence": "medium",
+        "caution": "留言來自少量樣本，仍要用自己的服務流程校正。",
+    }
+    value.update(overrides)
+    return value
+
+
+def validated_synthesis():
+    return {
+        "demand_patterns": [],
+        "supply_patterns": [],
+        "audience_patterns": [],
+        "cross_layer_insights": [
+            {
+                "insight_id": "I1",
+                "finding": "學習內容很多，但收費時機仍被反覆追問。",
+                "implication": "可把收費前的判斷做成具體選題。",
+                "layers": ["supply", "audience"],
+                "support_pattern_ids": ["S1", "A1"],
+                "source_video_ids": ["video-1", "video-2"],
+                "comment_refs": ["video-1:c1"],
+                "confidence": "medium",
+            }
+        ],
+    }
+
+
 class ReportingTests(unittest.TestCase):
-    def test_takeaway_prompt_does_not_reveal_internal_method_or_market_split(self):
+    def test_development_prompt_is_actionable_without_internal_method(self):
         prompt = angle_development_prompt(
             "命理創業",
-            {
-                "angle_name": "第一批客戶如何出現",
-                "opportunity": "從學會命理轉向取得第一批真實個案。",
-                "signal": "英文市場來源留言反覆追問如何開始收費。",
-                "route_note": "不要照抄國外市場案例，改用自己的接案資料。",
-                "comment_gap": "免費練習到什麼時候才能收費？",
-                "evidence_video_ids": ["video-1"],
-            },
+            action_card(),
             [{"id": "video-1", "title": "命理師接案", "url": "https://youtu.be/1"}],
         )
         for secret_term in (
@@ -27,214 +64,201 @@ class ReportingTests(unittest.TestCase):
             "outlier",
             "探勘輪數",
             "評分公式",
-            "國內外",
             "英文市場",
-            "台灣主場",
-            "國外市場",
+            "cross_layer",
         ):
             self.assertNotIn(secret_term, prompt)
+        self.assertIn("第一次向陌生人收費", prompt)
         self.assertIn("我的專業、經驗或觀點", prompt)
         self.assertIn("不要虛構數據", prompt)
 
-    def test_invalid_evidence_is_lowered_and_not_rendered_as_source(self):
-        report = {
-            "radar_summary": "有一個待驗證方向。",
-            "angles": [
+    def test_keyword_reflow_can_only_choose_sourced_candidates(self):
+        prompt = keyword_reflow_prompt(
+            "命理創業",
+            [
                 {
-                    "angle_name": "外食挑戰",
-                    "opportunity": "測試一週外食增肌。",
-                    "signal": "假的證據說法",
-                    "evidence_video_ids": ["not-real"],
-                    "comment_gap": "假的留言",
-                    "confidence": "high",
-                    "caution": "先確認可行性。",
+                    "candidate_id": "R001",
+                    "query": "tarot first paying client",
+                    "market": "en",
+                    "source_kind": "comment",
+                    "source_video_ids": ["video-1"],
                 }
             ],
-        }
-        validated = validate_angle_evidence(report, [], [])
-        self.assertEqual(validated["angles"][0]["confidence"], "low")
-        self.assertEqual(validated["angles"][0]["comment_gap"], "")
-        rendered = render_angle_report(validated, "增肌飲食", [])
-        self.assertIn("本次樣本沒有足夠直接來源", rendered)
-        self.assertNotIn("假的證據說法", rendered)
-
-    def test_comment_gap_must_exactly_match_a_referenced_breakdown(self):
-        base = {
-            "radar_summary": "摘要",
-            "angles": [
-                {
-                    "angle_name": "收費時機",
-                    "opportunity": "討論何時開始收費。",
-                    "signal": "留言出現追問。",
-                    "evidence_video_ids": ["video-1"],
-                    "comment_gap": "免費練習到什麼時候才能收費？",
-                    "confidence": "medium",
-                    "caution": "單一來源。",
-                }
-            ],
-        }
-        videos = [{"id": "video-1"}]
-        breakdowns = [
-            {
-                "video_id": "video-1",
-                "comment_gaps": ["免費練習到什麼時候才能收費？"],
-            }
-        ]
-        validated = validate_angle_evidence(base, videos, breakdowns)
-        self.assertEqual(
-            validated["angles"][0]["comment_gap"],
-            "免費練習到什麼時候才能收費？",
+            ["命理創業"],
         )
+        self.assertIn("R001", prompt)
+        self.assertIn("最多選 4 個", prompt)
+        self.assertIn("不可自創", prompt)
 
-        base["angles"][0]["comment_gap"] = "模型自己發明的留言缺口"
-        validated = validate_angle_evidence(base, videos, breakdowns)
-        self.assertEqual(validated["angles"][0]["comment_gap"], "")
-
-    def test_public_report_removes_emoji_and_method_labels(self):
-        report = {
-            "radar_summary": "🔥 值得研究",
-            "angles": [
+    def test_synthesis_validation_requires_real_cross_layer_support(self):
+        raw = {
+            "demand_patterns": [
                 {
-                    "angle_name": "💡 第一批客戶",
-                    "opportunity": "找出第一位陌生客戶從哪裡來。",
-                    "signal": "留言有明確追問。",
-                    "internal_signal_type": "momentum_extension",
-                    "route_note": "沿著高關注的接案內容，接著回答第一位陌生客戶從哪裡來。",
-                    "evidence_video_ids": ["video-1"],
-                    "comment_gap": "",
+                    "finding": "搜尋詞出現收費問題",
+                    "detail": "不同詞都指向第一次收費",
+                    "evidence_keywords": ["第一次收費"],
+                    "source_video_ids": ["video-1"],
+                    "comment_refs": [],
                     "confidence": "medium",
-                    "caution": "先看完整來源。",
                 }
             ],
+            "supply_patterns": [
+                {
+                    "finding": "影片多談收入，少談判斷",
+                    "detail": "兩支影片都略過第一次收費前的條件",
+                    "evidence_keywords": [],
+                    "source_video_ids": ["video-1", "video-2"],
+                    "comment_refs": [],
+                    "confidence": "medium",
+                }
+            ],
+            "audience_patterns": [
+                {
+                    "finding": "觀眾追問何時能收費",
+                    "detail": "留言留下具體問題",
+                    "evidence_keywords": [],
+                    "source_video_ids": ["video-1"],
+                    "comment_refs": ["video-1:c1", "fake:comment"],
+                    "confidence": "medium",
+                }
+            ],
+            "cross_layer_insights": [
+                {
+                    "finding": "第一次收費是供給缺口",
+                    "implication": "可做成判斷型影片",
+                    "layers": ["demand", "supply"],
+                    "support_pattern_ids": ["D1", "S1"],
+                    "source_video_ids": ["video-1", "video-2", "fake-video"],
+                    "comment_refs": [],
+                    "confidence": "medium",
+                },
+                {
+                    "finding": "只有單層的結論",
+                    "implication": "不應留下",
+                    "layers": ["demand"],
+                    "support_pattern_ids": ["D1"],
+                    "source_video_ids": ["video-1"],
+                    "comment_refs": [],
+                    "confidence": "high",
+                },
+            ],
+        }
+        videos = [{"id": "video-1"}, {"id": "video-2"}]
+        comments = {"video-1": [{"ref": "video-1:c1", "text": "何時能收費？"}]}
+        checked = validate_research_synthesis(raw, videos, comments)
+        self.assertEqual(checked["demand_patterns"][0]["insight_id"], "D1")
+        self.assertEqual(checked["supply_patterns"][0]["insight_id"], "S1")
+        self.assertEqual(len(checked["cross_layer_insights"]), 1)
+        self.assertEqual(
+            checked["cross_layer_insights"][0]["source_video_ids"],
+            ["video-1", "video-2"],
+        )
+        self.assertEqual(checked["cross_layer_insights"][0]["insight_id"], "I1")
+
+    def test_final_angle_sources_are_locked_to_validated_insights(self):
+        report = {
+            "radar_summary": "可以優先回答第一次收費。",
+            "angles": [
+                action_card(
+                    evidence_video_ids=["fake-video"],
+                    comment_refs=["fake:comment"],
+                )
+            ],
+        }
+        videos = [{"id": "video-1"}, {"id": "video-2"}]
+        checked = validate_angle_evidence(report, videos, validated_synthesis())
+        angle = checked["angles"][0]
+        self.assertEqual(angle["evidence_video_ids"], ["video-1", "video-2"])
+        self.assertEqual(angle["comment_refs"], ["video-1:c1"])
+        self.assertEqual(angle["internal_signal_type"], "audience_gap")
+        self.assertEqual(angle["confidence"], "medium")
+
+    def test_action_prompt_uses_strength_not_fixed_category_quotas(self):
+        prompt = angle_report_prompt(
+            "命理創業",
+            validated_synthesis(),
+            [
+                {
+                    "id": "video-1",
+                    "title": "Start a tarot business",
+                    "view_count": 20_000,
+                    "views_per_day": 800,
+                }
+            ],
+            6,
+        )
+        self.assertIn("最多提出 6 張行動卡", prompt)
+        self.assertIn("不足就少給", prompt)
+        self.assertIn("不設配額", prompt)
+        self.assertIn("opening_line", prompt)
+        self.assertNotIn("2 個 cross_context_adaptation", prompt)
+
+    def test_research_prompt_explicitly_compares_three_layers(self):
+        prompt = research_synthesis_prompt(
+            "命理創業",
+            {"zh": [{"kw": "命理創業", "intent": "核心詞"}], "en": []},
+            [],
+            [{"video_id": "video-1", "topic": "如何接案"}],
+            [
+                {
+                    "id": "video-1",
+                    "title": "如何接案",
+                    "keyword_hits": [{"keyword": "命理創業", "rank": 1}],
+                }
+            ],
+            {"video-1": [{"ref": "video-1:c1", "text": "何時能收費？"}]},
+            [],
+        )
+        self.assertIn("demand_patterns", prompt)
+        self.assertIn("supply_patterns", prompt)
+        self.assertIn("audience_patterns", prompt)
+        self.assertIn("support_pattern_ids", prompt)
+        self.assertIn("至少引用 2 支影片", prompt)
+
+    def test_public_report_is_an_action_card_not_a_research_report(self):
+        report = {
+            "radar_summary": "🔥 先回答收費判斷，比再做一支收入介紹更有差異。",
+            "angles": [action_card(angle_name="💡 第一次收費")],
         }
         videos = [
             {
                 "id": "video-1",
                 "title": "🚀 命理師接案",
                 "url": "https://youtu.be/1",
-                "view_count": 12000,
+                "view_count": 12_000,
                 "views_per_day": 800,
                 "baseline_sample_size": 5,
                 "outlier_ratio": 3.2,
             }
         ]
-        rendered = render_angle_report(
-            report,
-            "命理創業",
-            videos,
-            breakdowns=[
-                {
-                    "video_id": "video-1",
-                    "breakout_reasons": ["以真實接案過程形成結果懸念"],
-                    "reusable_angles": ["補上第一位陌生客戶的取得過程"],
-                }
-            ],
-        )
-        for text in (
-            "🔥",
-            "💡",
-            "🚀",
-            "foreign_adaptation",
-            "momentum_extension",
-            "國外移植",
+        rendered = render_angle_report(report, "命理創業", videos)
+        for value in ("🔥", "💡", "🚀", "audience_gap", "cross_layer"):
+            self.assertNotIn(value, rendered)
+        for value in (
+            "你可以拍",
+            "這支真正要講",
+            "你可以這樣拍",
+            "開場可以直接說",
+            "和現有內容拉開差異",
+            "不要拍成",
+            "近期同頻道基準的 3.2 倍",
         ):
-            self.assertNotIn(text, rendered)
-        self.assertIn("第一批客戶", rendered)
-        self.assertIn("熱門內容的延伸", rendered)
-        self.assertIn("沿著熱門話題可以接著談", rendered)
-        self.assertIn("近期同頻道基準的 3.2 倍", rendered)
-        self.assertIn("來源內容結論", rendered)
-        self.assertIn("第一位陌生客戶的取得過程", rendered)
-        self.assertIn("這個切角從哪裡挖到", rendered)
-        self.assertIn("線索完整度", rendered)
-        self.assertIn("深化前先確認", rendered)
-        self.assertIn(
-            "以下是值得探索的內容切角，不代表已證實的市場需求。",
-            rendered,
-        )
-        self.assertNotIn("證據信心", rendered)
+            self.assertIn(value, rendered)
+        self.assertNotIn("來源內容結論", rendered)
+        self.assertNotIn("這個切角從哪裡挖到", rendered)
 
-    def test_internal_route_is_downgraded_when_source_is_not_eligible(self):
+    def test_missing_insight_downgrades_claim(self):
         report = {
             "radar_summary": "摘要",
-            "angles": [
-                {
-                    "angle_name": "改寫來源",
-                    "opportunity": "把既有內容換成自己的案例。",
-                    "signal": "來源表現強。",
-                    "internal_signal_type": "cross_context_adaptation",
-                    "route_note": "轉成自己的版本。",
-                    "evidence_video_ids": ["zh-video"],
-                    "comment_gap": "",
-                    "confidence": "high",
-                    "caution": "需要查證。",
-                }
-            ],
+            "angles": [action_card(evidence_insight_ids=["not-real"])],
         }
-        videos = [{"id": "zh-video", "market": "zh", "evidence_score": 90}]
-        breakdowns = [{"video_id": "zh-video", "comment_gaps": []}]
-        validated = validate_angle_evidence(report, videos, breakdowns)
-        self.assertEqual(validated["angles"][0]["internal_signal_type"], "other")
-        self.assertEqual(validated["angles"][0]["confidence"], "low")
-
-    def test_report_prompt_forces_four_core_signal_families(self):
-        prompt = angle_report_prompt(
-            "命理創業",
-            {"zh": [{"kw": "算命創業", "intent": "核心詞"}], "en": []},
-            [
-                {
-                    "video_id": "en-video",
-                    "comment_gaps": ["第一批客戶從哪裡來？"],
-                }
-            ],
-            [
-                {
-                    "id": "en-video",
-                    "title": "Start a spiritual business",
-                    "market": "en",
-                    "evidence_score": 95,
-                    "views_per_day": 1000,
-                }
-            ],
-            [{"source_ids": ["en-video"], "recent_video_count": 3}],
-            8,
+        checked = validate_angle_evidence(
+            report, [{"id": "video-1"}], validated_synthesis()
         )
-        self.assertIn("2 個 cross_context_adaptation", prompt)
-        self.assertIn("2 個 audience_gap", prompt)
-        self.assertIn("2 個 momentum_extension", prompt)
-        self.assertIn("1 個 rising_topic", prompt)
-        self.assertIn("沿著哪個熱門內容", prompt)
-
-    def test_momentum_route_requires_real_performance_signal(self):
-        report = {
-            "radar_summary": "摘要",
-            "angles": [
-                {
-                    "angle_name": "接著談第一批客戶",
-                    "opportunity": "回答熱門接案題材留下的下一題。",
-                    "signal": "來源近期觀看速度高。",
-                    "internal_signal_type": "momentum_extension",
-                    "route_note": "沿著熱門內容接著談第一位陌生客戶。",
-                    "evidence_video_ids": ["hot-video"],
-                    "comment_gap": "",
-                    "confidence": "high",
-                    "caution": "仍需確認題材適配。",
-                }
-            ],
-        }
-        videos = [
-            {
-                "id": "hot-video",
-                "market": "zh",
-                "view_count": 50_000,
-                "views_per_day": 900,
-                "evidence_score": 95,
-            }
-        ]
-        validated = validate_angle_evidence(report, videos, [])
-        self.assertEqual(
-            validated["angles"][0]["internal_signal_type"], "momentum_extension"
-        )
+        angle = checked["angles"][0]
+        self.assertEqual(angle["confidence"], "low")
+        self.assertEqual(angle["evidence_video_ids"], [])
+        self.assertIn("沒有足夠", angle["why_worth_making"])
 
 
 if __name__ == "__main__":

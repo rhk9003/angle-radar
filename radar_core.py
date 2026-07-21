@@ -53,8 +53,59 @@ def fmt_num(value: Any) -> str:
 
 
 def stable_hash(value: Any) -> str:
-    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode(
+        "utf-8"
+    )
     return hashlib.sha256(raw).hexdigest()
+
+
+def parse_youtube_video_ids(text: str) -> list[str]:
+    """從使用者貼上的文字中找出 YouTube 影片 ID；不把一般關鍵字誤當 ID。"""
+    patterns = (
+        r"(?:youtube\.com/(?:watch\?(?:[^\s#]*&)?v=|shorts/|live/)|youtu\.be/)([\w-]{11})",
+        r"youtube\.com/embed/([\w-]{11})",
+    )
+    found: list[str] = []
+    for pattern in patterns:
+        for video_id in re.findall(pattern, text or "", flags=re.IGNORECASE):
+            if video_id not in found:
+                found.append(video_id)
+    return found
+
+
+def merge_search_results(
+    pool_by_id: dict[str, dict[str, Any]],
+    videos: list[dict[str, Any]],
+    *,
+    research_keyword: str,
+    market: str,
+    order: str,
+) -> None:
+    """合併搜尋結果，同時保留影片命中的每個關鍵字、排序與名次。"""
+    for fallback_rank, raw_video in enumerate(videos, start=1):
+        video_id = str(raw_video.get("id", ""))
+        if not video_id:
+            continue
+        hit = {
+            "keyword": research_keyword,
+            "market": market,
+            "order": order,
+            "rank": int(raw_video.get("search_rank", 0) or fallback_rank),
+        }
+        if video_id not in pool_by_id:
+            video = dict(raw_video)
+            video["market"] = str(raw_video.get("market") or market)
+            video["research_keyword"] = research_keyword
+            video["keyword_hits"] = [hit]
+            pool_by_id[video_id] = video
+            continue
+        existing = pool_by_id[video_id]
+        hits = existing.setdefault("keyword_hits", [])
+        if hit not in hits:
+            hits.append(hit)
+        existing["tags"] = list(
+            dict.fromkeys([*existing.get("tags", []), *raw_video.get("tags", [])])
+        )[:20]
 
 
 def build_brief(
@@ -132,14 +183,18 @@ def brief_to_text(brief: dict[str, str], *, include_market: bool = True) -> str:
     ]
     if include_market:
         rows.insert(5, ("市場", brief.get("market_focus")))
-    return "\n".join(f"- {label}：{value}" for label, value in rows if value and value != "不限")
+    return "\n".join(
+        f"- {label}：{value}" for label, value in rows if value and value != "不限"
+    )
 
 
 def _normalized_ngrams(text: str, size: int = 2) -> set[str]:
     normalized = re.sub(r"[^\w\u3400-\u9fff]+", "", (text or "").lower())
     if len(normalized) <= size:
         return {normalized} if normalized else set()
-    return {normalized[index : index + size] for index in range(len(normalized) - size + 1)}
+    return {
+        normalized[index : index + size] for index in range(len(normalized) - size + 1)
+    }
 
 
 def text_similarity(left: str, right: str) -> float:
@@ -171,7 +226,9 @@ def prefilter_keyword_pool(
     selected: list[tuple[str, int, int]] = []
     for item in sorted(pool, key=lambda value: (-value[1], value[2], len(value[0]))):
         term = item[0].strip()
-        if not term or any(text_similarity(term, existing[0]) >= 0.82 for existing in selected):
+        if not term or any(
+            text_similarity(term, existing[0]) >= 0.82 for existing in selected
+        ):
             continue
         selected.append(item)
         if len(selected) >= limit:
@@ -287,11 +344,15 @@ def attach_outlier_metrics_v2(
         video["origin"] = infer_origin(video, profile.get("country", ""))
         video["views_per_day"] = int(views_per_day)
         video["vs_subs"] = round(views / subscribers, 2) if subscribers else 0.0
-        video["engagement_rate"] = round((likes + comments * 2) / views, 4) if views else 0.0
+        video["engagement_rate"] = (
+            round((likes + comments * 2) / views, 4) if views else 0.0
+        )
 
         references: list[float] = []
         for reference in recent_by_channel.get(video.get("channel_id", ""), []):
-            if reference.get("id") == video.get("id") or _is_short(reference) != _is_short(video):
+            if reference.get("id") == video.get("id") or _is_short(
+                reference
+            ) != _is_short(video):
                 continue
             reference_age = video_age_days(reference.get("publish_time", ""))
             if reference_age > 540:
@@ -304,7 +365,9 @@ def attach_outlier_metrics_v2(
         if sample_size >= 3:
             baseline = statistics.median(references)
             ratio = views_per_day / baseline if baseline else 0.0
-            confidence = "high" if sample_size >= 8 else "medium" if sample_size >= 5 else "low"
+            confidence = (
+                "high" if sample_size >= 8 else "medium" if sample_size >= 5 else "low"
+            )
         else:
             baseline = 0.0
             ratio = 0.0
@@ -318,19 +381,33 @@ def attach_outlier_metrics_v2(
 
 def assign_evidence_scores(videos: list[dict[str, Any]]) -> list[dict[str, Any]]:
     outliers = sorted(float(video.get("outlier_ratio", 0) or 0) for video in videos)
-    velocities = sorted(math.log1p(float(video.get("views_per_day", 0) or 0)) for video in videos)
-    subscriber_ratios = sorted(math.log1p(float(video.get("vs_subs", 0) or 0)) for video in videos)
-    engagements = sorted(float(video.get("engagement_rate", 0) or 0) for video in videos)
+    velocities = sorted(
+        math.log1p(float(video.get("views_per_day", 0) or 0)) for video in videos
+    )
+    subscriber_ratios = sorted(
+        math.log1p(float(video.get("vs_subs", 0) or 0)) for video in videos
+    )
+    engagements = sorted(
+        float(video.get("engagement_rate", 0) or 0) for video in videos
+    )
     for video in videos:
-        outlier_weight = 0.4 if int(video.get("baseline_sample_size", 0) or 0) >= 3 else 0.15
+        outlier_weight = (
+            0.4 if int(video.get("baseline_sample_size", 0) or 0) >= 3 else 0.15
+        )
         velocity_weight = 0.3 + (0.4 - outlier_weight)
         score = (
-            outlier_weight * _percentile(float(video.get("outlier_ratio", 0) or 0), outliers)
+            outlier_weight
+            * _percentile(float(video.get("outlier_ratio", 0) or 0), outliers)
             + velocity_weight
-            * _percentile(math.log1p(float(video.get("views_per_day", 0) or 0)), velocities)
+            * _percentile(
+                math.log1p(float(video.get("views_per_day", 0) or 0)), velocities
+            )
             + 0.15
-            * _percentile(math.log1p(float(video.get("vs_subs", 0) or 0)), subscriber_ratios)
-            + 0.15 * _percentile(float(video.get("engagement_rate", 0) or 0), engagements)
+            * _percentile(
+                math.log1p(float(video.get("vs_subs", 0) or 0)), subscriber_ratios
+            )
+            + 0.15
+            * _percentile(float(video.get("engagement_rate", 0) or 0), engagements)
         )
         video["evidence_score"] = round(score * 100)
     return videos
@@ -374,10 +451,15 @@ def pick_videos_diverse(
                 return
             channel_id = video.get("channel_id", "")
             keyword = video.get("research_keyword") or video.get("source_keyword", "")
-            if video in selected or channel_id in channels or keyword_count.get(keyword, 0) >= 2:
+            if (
+                video in selected
+                or channel_id in channels
+                or keyword_count.get(keyword, 0) >= 2
+            ):
                 continue
             if not relaxed and any(
-                text_similarity(video.get("title", ""), existing.get("title", "")) >= 0.66
+                text_similarity(video.get("title", ""), existing.get("title", ""))
+                >= 0.66
                 for existing in selected
             ):
                 continue
@@ -385,7 +467,9 @@ def pick_videos_diverse(
             channels.add(channel_id)
             keyword_count[keyword] = keyword_count.get(keyword, 0) + 1
 
-    desired_en = min(round(k * en_share), len([v for v in eligible if v.get("market") == "en"]))
+    desired_en = min(
+        round(k * en_share), len([v for v in eligible if v.get("market") == "en"])
+    )
     take([video for video in eligible if video.get("market") == "en"], desired_en)
     take(eligible, k)
     if len(selected) < k:
@@ -413,26 +497,41 @@ def build_transcript_evidence(
     if not clean_segments:
         return ""
 
-    all_lines = [f"[{format_timestamp(item['start'])}] {item['text']}" for item in clean_segments]
+    all_lines = [
+        f"[{format_timestamp(item['start'])}] {item['text']}" for item in clean_segments
+    ]
     if len("\n".join(all_lines)) <= max_chars:
         return "\n".join(all_lines)
 
     last_start = clean_segments[-1]["start"]
     selected_indices = {
-        index for index, item in enumerate(clean_segments) if item["start"] <= min(45, last_start)
+        index
+        for index, item in enumerate(clean_segments)
+        if item["start"] <= min(45, last_start)
     }
     selected_indices.update(
-        index for index, item in enumerate(clean_segments) if item["start"] >= max(last_start - 60, 0)
+        index
+        for index, item in enumerate(clean_segments)
+        if item["start"] >= max(last_start - 60, 0)
     )
     for fraction in (0.2, 0.4, 0.6, 0.8):
         target = last_start * fraction
-        closest = min(range(len(clean_segments)), key=lambda idx: abs(clean_segments[idx]["start"] - target))
-        selected_indices.update(range(max(0, closest - 1), min(len(clean_segments), closest + 2)))
+        closest = min(
+            range(len(clean_segments)),
+            key=lambda idx: abs(clean_segments[idx]["start"] - target),
+        )
+        selected_indices.update(
+            range(max(0, closest - 1), min(len(clean_segments), closest + 2))
+        )
 
     prioritized = sorted(
         selected_indices,
         key=lambda index: (
-            0 if clean_segments[index]["start"] <= 45 else 1 if clean_segments[index]["start"] >= last_start - 60 else 2,
+            0
+            if clean_segments[index]["start"] <= 45
+            else 1
+            if clean_segments[index]["start"] >= last_start - 60
+            else 2,
             clean_segments[index]["start"],
         ),
     )
@@ -451,25 +550,61 @@ def build_transcript_evidence(
 
 
 def compress_comments(
-    comments: list[dict[str, Any]], limit: int = 8, max_chars_each: int = 180
+    comments: list[dict[str, Any]], limit: int = 12, max_chars_each: int = 180
 ) -> list[dict[str, Any]]:
-    ranked = sorted(
-        comments,
-        key=lambda comment: (
-            int(comment.get("likes", 0) or 0) + int(comment.get("replies", 0) or 0) * 3
-        ),
-        reverse=True,
-    )
-    selected: list[dict[str, Any]] = []
-    for comment in ranked:
-        text = re.sub(r"\s+", " ", str(comment.get("text", ""))).strip()[:max_chars_each]
-        if not text or any(text_similarity(text, item["text"]) >= 0.8 for item in selected):
+    """去重後分層抽樣，不讓高讚稱讚留言吃掉所有研究名額。"""
+
+    def kind_for(text: str) -> str:
+        lowered = text.lower()
+        if re.search(r"[?？]|怎麼|如何|為什麼|請問|what|how|why|anyone know", lowered):
+            return "question"
+        if re.search(
+            r"希望|想看|可以.*(?:講|拍|做)|拜託|wish|please|could you", lowered
+        ):
+            return "request"
+        if re.search(r"比較|差別|還是|vs\.?|versus|compare|difference|better", lowered):
+            return "comparison"
+        if re.search(
+            r"但是|不過|不同意|不一定|問題是|錯|but|however|disagree|wrong", lowered
+        ):
+            return "objection"
+        if re.search(
+            r"失敗|卡住|沒辦法|太貴|困難|痛苦|failed|stuck|expensive|hard", lowered
+        ):
+            return "pain"
+        return "reaction"
+
+    prepared: list[dict[str, Any]] = []
+    for comment in comments:
+        text = re.sub(r"\s+", " ", str(comment.get("text", ""))).strip()[
+            :max_chars_each
+        ]
+        if not text:
             continue
+        score = (
+            int(comment.get("likes", 0) or 0) + int(comment.get("replies", 0) or 0) * 3
+        )
+        prepared.append(
+            {**comment, "text": text, "comment_kind": kind_for(text), "_score": score}
+        )
+
+    prepared.sort(key=lambda comment: int(comment.get("_score", 0)), reverse=True)
+    selected: list[dict[str, Any]] = []
+
+    def add(comment: dict[str, Any]) -> None:
+        text = comment["text"]
+        if any(text_similarity(text, item["text"]) >= 0.8 for item in selected):
+            return
         selected.append(
             {
+                "comment_id": str(comment.get("comment_id", "")),
+                "ref": str(comment.get("ref", "")),
                 "text": text,
                 "likes": int(comment.get("likes", 0) or 0),
                 "replies": int(comment.get("replies", 0) or 0),
+                "comment_kind": comment.get("comment_kind", "reaction"),
+                "source_orders": list(dict.fromkeys(comment.get("source_orders", []))),
+                "published_at": str(comment.get("published_at", "")),
                 "reply_samples": [
                     re.sub(r"\s+", " ", str(reply)).strip()[:140]
                     for reply in comment.get("reply_samples", [])[:2]
@@ -477,9 +612,182 @@ def compress_comments(
                 ],
             }
         )
+
+    # 每種研究訊號先保留一則，再按互動補足。稱讚／共鳴仍會保留，但不再壟斷。
+    for kind in ("question", "request", "comparison", "objection", "pain", "reaction"):
+        for comment in prepared:
+            if comment.get("comment_kind") == kind:
+                add(comment)
+                break
+    for comment in prepared:
+        if len(selected) >= limit:
+            break
+        add(comment)
+    return selected[:limit]
+
+
+def build_reflow_candidates(
+    videos: list[dict[str, Any]],
+    comments_by_video: dict[str, list[dict[str, Any]]],
+    existing_terms: list[str],
+    limit: int = 48,
+) -> list[dict[str, Any]]:
+    """從實際標題、Tags 與留言建立第二輪搜尋候選，不讓模型憑空造詞。"""
+    candidates: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def add(
+        query: str,
+        market: str,
+        video_id: str,
+        source_kind: str,
+        context: str,
+        weight: int,
+    ) -> None:
+        clean = re.sub(r"\s+", " ", str(query or "")).strip(" -–—|｜:：!?！？#")
+        if len(clean) < 3 or len(clean) > 80:
+            return
+        if any(text_similarity(clean, term) >= 0.82 for term in existing_terms if term):
+            return
+        key = (market, clean.lower())
+        item = candidates.setdefault(
+            key,
+            {
+                "query": clean,
+                "market": market,
+                "source_kind": source_kind,
+                "source_video_ids": [],
+                "contexts": [],
+                "score": 0,
+            },
+        )
+        if video_id not in item["source_video_ids"]:
+            item["source_video_ids"].append(video_id)
+        if context and context not in item["contexts"]:
+            item["contexts"].append(context[:140])
+        item["score"] += weight
+
+    for video in videos:
+        video_id = str(video.get("id", ""))
+        market = str(video.get("market", "zh"))
+        title = re.sub(r"\s+", " ", str(video.get("title", ""))).strip()
+        for tag in video.get("tags", [])[:10]:
+            add(str(tag), market, video_id, "tag", title, 5)
+        title_parts = re.split(r"[|｜:：–—]|\s+-\s+", title)
+        for part in title_parts[:4]:
+            add(part, market, video_id, "title", title, 2)
+        for comment in compress_comments(comments_by_video.get(video_id, []), limit=8):
+            if comment.get("comment_kind") not in {
+                "question",
+                "request",
+                "comparison",
+                "objection",
+                "pain",
+            }:
+                continue
+            interaction = min(int(comment.get("likes", 0) or 0), 20) // 5
+            add(
+                comment.get("text", ""),
+                market,
+                video_id,
+                "comment",
+                comment.get("text", ""),
+                5 + interaction,
+            )
+
+    ranked = sorted(
+        candidates.values(),
+        key=lambda item: (
+            len(item.get("source_video_ids", [])),
+            int(item.get("score", 0)),
+            -len(item.get("query", "")),
+        ),
+        reverse=True,
+    )[:limit]
+    for index, item in enumerate(ranked, start=1):
+        item["candidate_id"] = f"R{index:03d}"
+        item["source_video_ids"] = item["source_video_ids"][:4]
+        item["contexts"] = item["contexts"][:2]
+    return ranked
+
+
+def validate_reflow_selection(
+    response: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    existing_terms: list[str],
+    limit: int = 4,
+) -> list[dict[str, Any]]:
+    """把模型選擇鎖回候選 ID，並阻止近似詞和任意新詞進入第二輪。"""
+    by_id = {str(item.get("candidate_id", "")): item for item in candidates}
+    selected: list[dict[str, Any]] = []
+    for raw in response.get("terms", []):
+        candidate = by_id.get(str(raw.get("candidate_id", "")))
+        if not candidate:
+            continue
+        original = str(candidate.get("query", "")).strip()
+        proposed = re.sub(r"\s+", " ", str(raw.get("query", ""))).strip()
+        if (
+            not proposed
+            or len(proposed) > 90
+            or text_similarity(proposed, original) < 0.08
+        ):
+            proposed = original
+        comparison = [*existing_terms, *(item["kw"] for item in selected)]
+        if any(text_similarity(proposed, term) >= 0.78 for term in comparison if term):
+            continue
+        selected.append(
+            {
+                "kw": proposed,
+                "market": candidate.get("market", "zh"),
+                "intent": "資料回流",
+                "reason": str(raw.get("reason", "")).strip()[:120]
+                or f"來自影片的{candidate.get('source_kind', '內容')}線索",
+                "candidate_id": candidate.get("candidate_id", ""),
+                "source_kind": candidate.get("source_kind", ""),
+                "source_video_ids": candidate.get("source_video_ids", [])[:4],
+            }
+        )
         if len(selected) >= limit:
             break
     return selected
+
+
+def pick_evidence_ready_videos(
+    candidates: list[dict[str, Any]],
+    transcripts: dict[str, list[dict[str, Any]]],
+    comments: dict[str, list[dict[str, Any]]],
+    k: int,
+) -> list[dict[str, Any]]:
+    """優先選到真的有字幕或足量留言的影片，資料缺漏時以候選自動補位。"""
+    indexed = {
+        str(video.get("id", "")): index for index, video in enumerate(candidates)
+    }
+
+    def score(video: dict[str, Any]) -> tuple[float, float]:
+        video_id = str(video.get("id", ""))
+        transcript_n = len(transcripts.get(video_id, []))
+        comment_n = len(comments.get(video_id, []))
+        readiness = (
+            (8 if video.get("is_reference") else 0)
+            + (5 if transcript_n else 0)
+            + min(comment_n, 12) / 4
+            + (1 if transcript_n and comment_n >= 3 else 0)
+        )
+        return readiness, float(video.get("evidence_score", 0) or 0) - indexed.get(
+            video_id, 0
+        ) / 100
+
+    ready = [
+        video
+        for video in candidates
+        if video.get("is_reference")
+        or transcripts.get(str(video.get("id", "")))
+        or len(comments.get(str(video.get("id", "")), [])) >= 3
+    ]
+    fallback = [video for video in candidates if video not in ready]
+    return [
+        *sorted(ready, key=score, reverse=True),
+        *sorted(fallback, key=score, reverse=True),
+    ][:k]
 
 
 def market_coverage(videos: list[dict[str, Any]]) -> dict[str, Any]:
@@ -513,31 +821,55 @@ def derive_rising_signals(
     observed_velocity_by_id = observed_velocity_by_id or {}
     groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for video in videos:
-        keyword = str(
-            video.get("research_keyword") or video.get("source_keyword") or ""
-        ).strip()
-        if keyword:
-            groups.setdefault((video.get("market", ""), keyword), []).append(video)
+        hits = video.get("keyword_hits", []) or [
+            {
+                "keyword": video.get("research_keyword") or video.get("source_keyword"),
+                "market": video.get("market", ""),
+            }
+        ]
+        seen_keys: set[tuple[str, str]] = set()
+        for hit in hits:
+            keyword = str(hit.get("keyword") or "").strip()
+            market = str(hit.get("market") or video.get("market", ""))
+            key = (market, keyword)
+            if keyword and key not in seen_keys:
+                groups.setdefault(key, []).append(video)
+                seen_keys.add(key)
 
     signals: list[dict[str, Any]] = []
     for (market, keyword), group in groups.items():
-        recent = [video for video in group if video_age_days(video.get("publish_time", "")) <= 60]
+        recent = [
+            video
+            for video in group
+            if video_age_days(video.get("publish_time", "")) <= 60
+        ]
         previous = [
             video
             for video in group
             if 60 < video_age_days(video.get("publish_time", "")) <= 240
         ]
-        channels = {video.get("channel_id", "") for video in recent if video.get("channel_id")}
+        channels = {
+            video.get("channel_id", "") for video in recent if video.get("channel_id")
+        }
         if len(recent) < 2 or len(channels) < 2:
             continue
 
         recent_velocity = [
-            float(observed_velocity_by_id.get(video.get("id", ""), video.get("views_per_day", 0)) or 0)
+            float(
+                observed_velocity_by_id.get(
+                    video.get("id", ""), video.get("views_per_day", 0)
+                )
+                or 0
+            )
             for video in recent
         ]
-        previous_velocity = [float(video.get("views_per_day", 0) or 0) for video in previous]
+        previous_velocity = [
+            float(video.get("views_per_day", 0) or 0) for video in previous
+        ]
         median_velocity = statistics.median(recent_velocity) if recent_velocity else 0.0
-        previous_median = statistics.median(previous_velocity) if len(previous_velocity) >= 2 else 0.0
+        previous_median = (
+            statistics.median(previous_velocity) if len(previous_velocity) >= 2 else 0.0
+        )
         acceleration = median_velocity / previous_median if previous_median else None
         outliers = [
             float(video.get("outlier_ratio", 0) or 0)
@@ -545,7 +877,9 @@ def derive_rising_signals(
             if float(video.get("outlier_ratio", 0) or 0) > 0
         ]
         median_outlier = statistics.median(outliers) if outliers else 0.0
-        historical_count = sum(video.get("id") in observed_velocity_by_id for video in recent)
+        historical_count = sum(
+            video.get("id") in observed_velocity_by_id for video in recent
+        )
         score = (
             min(math.log10(median_velocity + 1) / 4, 1) * 35
             + min(len(channels) / 4, 1) * 25
@@ -561,7 +895,9 @@ def derive_rising_signals(
         sources = sorted(
             recent,
             key=lambda video: (
-                observed_velocity_by_id.get(video.get("id", ""), video.get("views_per_day", 0)),
+                observed_velocity_by_id.get(
+                    video.get("id", ""), video.get("views_per_day", 0)
+                ),
                 video.get("evidence_score", 0),
             ),
             reverse=True,
@@ -574,7 +910,9 @@ def derive_rising_signals(
                 "recent_video_count": len(recent),
                 "recent_channel_count": len(channels),
                 "median_daily_velocity": int(median_velocity),
-                "acceleration_vs_older": round(acceleration, 2) if acceleration else None,
+                "acceleration_vs_older": round(acceleration, 2)
+                if acceleration
+                else None,
                 "median_outlier": round(median_outlier, 1),
                 "historical_velocity_samples": historical_count,
                 "confidence": confidence,
@@ -582,4 +920,6 @@ def derive_rising_signals(
                 "source_ids": [video.get("id", "") for video in sources],
             }
         )
-    return sorted(signals, key=lambda signal: signal["signal_score"], reverse=True)[:limit]
+    return sorted(signals, key=lambda signal: signal["signal_score"], reverse=True)[
+        :limit
+    ]

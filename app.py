@@ -16,29 +16,41 @@ from llm_client import GeminiClient, UsageLedger
 from radar_core import (
     MARKET_LABEL,
     attach_outlier_metrics_v2,
+    build_reflow_candidates,
     build_search_terms,
     build_transcript_evidence,
     compress_comments,
     derive_rising_signals,
     market_coverage,
+    merge_search_results,
+    parse_youtube_video_ids,
+    pick_evidence_ready_videos,
     pick_videos_diverse,
     prefilter_keyword_pool,
     stable_hash,
+    validate_reflow_selection,
 )
 from reporting import (
     ANGLE_REPORT_SCHEMA,
     BREAKDOWN_BATCH_SCHEMA,
+    KEYWORD_REFLOW_SCHEMA,
     KEYWORD_PLAN_SCHEMA,
     RELEVANCE_SCHEMA,
+    RESEARCH_SYNTHESIS_SCHEMA,
     angle_development_prompt,
     angle_report_prompt,
     breakdown_batch_prompt,
     build_public_export,
+    keyword_reflow_prompt,
     keyword_plan_prompt,
     relevance_prompt,
     render_angle_report,
+    render_action_card,
+    render_action_evidence,
     render_breakdown,
+    research_synthesis_prompt,
     validate_angle_evidence,
+    validate_research_synthesis,
 )
 from youtube_data import YouTubeData
 
@@ -47,7 +59,12 @@ st.set_page_config(page_title="切角雷達", layout="wide")
 
 DEFAULT_PIPELINE_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_REPORT_MODEL = "gemini-3.5-flash"
-BREAKDOWN_PROMPT_VERSION = "angle-evidence-v3"
+BREAKDOWN_PROMPT_VERSION = "angle-evidence-v4"
+MAX_REFLOW_TERMS = 4
+MAX_DISCOVERY_VIDEOS = 10
+MAX_EVIDENCE_PROBES = 12
+MAX_RELEVANCE_VIDEOS = 180
+COMMENTS_PER_ORDER = 40
 LOGGER = logging.getLogger(__name__)
 
 
@@ -64,7 +81,9 @@ def _wl_enabled() -> bool:
 
 def _is_admin() -> bool:
     admin_code = _secret("ADMIN_CODE")
-    signed_in_admin = bool(admin_code) and st.session_state.get("_wl_code", "") == admin_code
+    signed_in_admin = (
+        bool(admin_code) and st.session_state.get("_wl_code", "") == admin_code
+    )
     explicit_local_admin = str(_secret("SHOW_ADMIN_DIAGNOSTICS")).lower() in {
         "1",
         "true",
@@ -85,9 +104,13 @@ def _wl_api(
         payload.update(extra_payload)
     try:
         if action == "check":
-            response = requests.get(_secret("WHITELIST_API_URL"), params=payload, timeout=20)
+            response = requests.get(
+                _secret("WHITELIST_API_URL"), params=payload, timeout=20
+            )
         else:
-            response = requests.post(_secret("WHITELIST_API_URL"), data=payload, timeout=20)
+            response = requests.post(
+                _secret("WHITELIST_API_URL"), data=payload, timeout=20
+            )
         response.raise_for_status()
         return response.json()
     except Exception:
@@ -107,7 +130,9 @@ _WL_ERR = {
 if _wl_enabled() and not st.session_state.get("_wl_ok"):
     st.subheader("測試通行")
     st.caption("這是邀請制內測，請輸入站主提供的試用碼")
-    access_code = st.text_input("試用碼", label_visibility="collapsed", placeholder="輸入試用碼")
+    access_code = st.text_input(
+        "試用碼", label_visibility="collapsed", placeholder="輸入試用碼"
+    )
     if st.button("進入", type="primary"):
         info = _wl_api("check", access_code)
         if info.get("ok") or info.get("found"):
@@ -159,7 +184,10 @@ def _video_packet(
     comments: list[dict[str, Any]],
 ) -> dict[str, Any]:
     evidence = build_transcript_evidence(transcript, max_chars=3_000)
-    compact_comments = compress_comments(comments, limit=8, max_chars_each=180)
+    compact_comments = compress_comments(comments, limit=12, max_chars_each=180)
+    for index, comment in enumerate(compact_comments, start=1):
+        if not comment.get("ref"):
+            comment["ref"] = f"{video['id']}:sample-{index}"
     return {
         "video_id": video["id"],
         "title": video.get("title", ""),
@@ -173,7 +201,9 @@ def _video_packet(
         },
         "timed_transcript_evidence": evidence or "（沒有可用字幕）",
         "comments": compact_comments,
-        "source_quality": "timed_transcript" if evidence else "metadata_and_comments_only",
+        "source_quality": "timed_transcript"
+        if evidence
+        else "metadata_and_comments_only",
     }
 
 
@@ -187,6 +217,7 @@ def _fallback_breakdown(packet: dict[str, Any]) -> dict[str, Any]:
         "breakout_reasons": ["只有影片數據，無法可靠判斷內容機制。"],
         "reusable_angles": [],
         "comment_gaps": [],
+        "audience_questions": [],
         "evidence_notes": [],
         "confidence": "low",
     }
@@ -203,7 +234,9 @@ def _analyze_packets(
     misses: list[dict[str, Any]] = []
     key_by_id: dict[str, str] = {}
     for packet in packets:
-        cache_key = "breakdown:" + stable_hash([BREAKDOWN_PROMPT_VERSION, model, packet])
+        cache_key = "breakdown:" + stable_hash(
+            [BREAKDOWN_PROMPT_VERSION, model, packet]
+        )
         key_by_id[packet["video_id"]] = cache_key
         cached = cache.get(cache_key)
         if cached:
@@ -218,7 +251,7 @@ def _analyze_packets(
             model=model,
             prompt=breakdown_batch_prompt(misses),
             schema=BREAKDOWN_BATCH_SCHEMA,
-            max_output_tokens=min(5_500, 850 * len(misses) + 600),
+            max_output_tokens=min(6_000, 950 * len(misses) + 600),
             thinking_level="low",
         )
         valid_ids = {packet["video_id"] for packet in misses}
@@ -228,7 +261,10 @@ def _analyze_packets(
                 output[video_id] = breakdown
                 cache.set(key_by_id[video_id], breakdown, 604_800)
 
-    return [output.get(packet["video_id"], _fallback_breakdown(packet)) for packet in packets]
+    return [
+        output.get(packet["video_id"], _fallback_breakdown(packet))
+        for packet in packets
+    ]
 
 
 def _safe_future_result(future: concurrent.futures.Future[Any]) -> list[dict[str, Any]]:
@@ -236,6 +272,46 @@ def _safe_future_result(future: concurrent.futures.Future[Any]) -> list[dict[str
         return future.result()
     except Exception:
         return []
+
+
+def _collect_comments(
+    youtube: YouTubeData,
+    videos: list[dict[str, Any]],
+    existing: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    output = dict(existing or {})
+    targets = [video for video in videos if video.get("id") not in output]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {
+            executor.submit(
+                youtube.sample_comments,
+                video["id"],
+                COMMENTS_PER_ORDER,
+            ): video["id"]
+            for video in targets
+        }
+        for future in concurrent.futures.as_completed(futures):
+            output[futures[future]] = _safe_future_result(future)
+    return output
+
+
+def _collect_transcripts(
+    youtube: YouTubeData,
+    videos: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    output: dict[str, list[dict[str, Any]]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {
+            executor.submit(
+                youtube.transcript_segments,
+                video["id"],
+                video.get("market", "zh"),
+            ): video["id"]
+            for video in videos
+        }
+        for future in concurrent.futures.as_completed(futures):
+            output[futures[future]] = _safe_future_result(future)
+    return output
 
 
 def run_pipeline(
@@ -252,7 +328,12 @@ def run_pipeline(
         "topic": topic,
         "exclusions": exclusions,
         "references": references,
-        "cfg": {key: value for key, value in cfg.items() if key not in {"gemini_key", "yt_key"}},
+        "cfg": {
+            key: value
+            for key, value in cfg.items()
+            if key not in {"gemini_key", "yt_key"}
+        },
+        "collection_stats": {},
     }
     try:
         plan = gemini.generate_json(
@@ -268,7 +349,7 @@ def run_pipeline(
         result["keyword_plan"] = plan
         progress.update(
             "正在整理公開資料…",
-            "已完成一次關鍵字起點生成；後續候選詞採確定性選取。",
+            "已完成第一輪搜尋起點；第二輪只允許從實際資料候選中選取。",
         )
 
         zh_seeds = []
@@ -298,31 +379,60 @@ def run_pipeline(
         result["selected_kws"] = selected
         result["mining_log"] = {"zh": zh_log, "en": en_log}
 
-        all_videos: list[dict[str, Any]] = []
-        seen: set[str] = set()
+        pool_by_id: dict[str, dict[str, Any]] = {}
         search_jobs = []
         orders = ["relevance", "viewCount", "date"]
         for language in ("en", "zh"):
             for index, item in enumerate(selected.get(language, [])):
                 research_keyword = item.get("kw", "")
-                query = _apply_negatives(research_keyword, plan.get("negative_keywords", []))
+                query = _apply_negatives(
+                    research_keyword, plan.get("negative_keywords", [])
+                )
                 search_jobs.append(
                     (language, research_keyword, query, orders[index % len(orders)])
                 )
         for language, research_keyword, query, order in search_jobs:
-            for video in youtube.search_videos(
+            found = youtube.search_videos(
                 query,
                 language,
                 cfg["window_days"],
                 cfg["per_kw"],
                 order,
-            ):
-                video["research_keyword"] = research_keyword
-                if video["id"] not in seen:
-                    seen.add(video["id"])
-                    all_videos.append(video)
+            )
+            merge_search_results(
+                pool_by_id,
+                found,
+                research_keyword=research_keyword,
+                market=language,
+                order=order,
+            )
+
+        reference_ids = parse_youtube_video_ids(references)
+        if reference_ids:
+            reference_videos = youtube.videos_by_ids(reference_ids, "zh")
+            for video in reference_videos:
+                merge_search_results(
+                    pool_by_id,
+                    [video],
+                    research_keyword="使用者參考",
+                    market=video.get("market", "zh"),
+                    order="reference",
+                )
+                if video.get("id") in pool_by_id:
+                    pool_by_id[video["id"]]["is_reference"] = True
+
+        all_videos = list(pool_by_id.values())
+        result["collection_stats"].update(
+            {
+                "first_round_search_terms": len(search_jobs),
+                "first_round_unique_videos": len(all_videos),
+                "reference_video_ids_parsed": len(reference_ids),
+            }
+        )
         if not all_videos:
-            raise RuntimeError("沒有取得可分析的公開影片，請調整主題或檢查 YouTube API Key。")
+            raise RuntimeError(
+                "沒有取得可分析的公開影片，請調整主題或檢查 YouTube API Key。"
+            )
 
         progress.update(
             "正在收斂值得看的線索…",
@@ -332,23 +442,140 @@ def run_pipeline(
             relevance = gemini.generate_json(
                 stage="候選相關性檢查",
                 model=cfg["pipeline_model"],
-                prompt=relevance_prompt(topic, all_videos, exclusions, references),
+                prompt=relevance_prompt(
+                    topic,
+                    sorted(
+                        all_videos,
+                        key=lambda video: (
+                            bool(video.get("is_reference")),
+                            int(video.get("view_count", 0) or 0),
+                        ),
+                        reverse=True,
+                    )[:MAX_RELEVANCE_VIDEOS],
+                    exclusions,
+                    references,
+                ),
                 schema=RELEVANCE_SCHEMA,
                 max_output_tokens=500,
                 thinking_level="low",
             )
             irrelevant = set(relevance.get("irrelevant_ids", []))
-            filtered = [video for video in all_videos if video["id"] not in irrelevant]
+            filtered = [
+                video
+                for video in all_videos
+                if video["id"] not in irrelevant or video.get("is_reference")
+            ]
             if filtered:
                 all_videos = filtered
+                pool_by_id = {video["id"]: video for video in all_videos}
         except Exception:
             pass
+        result["collection_stats"]["after_relevance_videos"] = len(all_videos)
 
-        profiles = youtube.channel_profiles([video["channel_id"] for video in all_videos])
+        # 第一輪只做便宜的本地指標，先讀少量留言，再由真實資料修正一次搜尋方向。
+        attach_outlier_metrics_v2(all_videos, {}, {})
+        discovery_candidates = pick_videos_diverse(
+            all_videos,
+            k=min(MAX_DISCOVERY_VIDEOS, len(all_videos)),
+            min_views=cfg["min_views"],
+            en_share=0.5,
+            video_type=cfg["video_type"],
+        )
+        if not discovery_candidates:
+            discovery_candidates = sorted(
+                all_videos,
+                key=lambda video: video.get("evidence_score", 0),
+                reverse=True,
+            )[:MAX_DISCOVERY_VIDEOS]
+        references_in_pool = [
+            video for video in all_videos if video.get("is_reference")
+        ]
+        discovery_candidates = list(
+            {
+                video["id"]: video
+                for video in [*references_in_pool, *discovery_candidates]
+            }.values()
+        )[:MAX_DISCOVERY_VIDEOS]
+        comments_map = _collect_comments(youtube, discovery_candidates)
+
+        existing_terms = [
+            item.get("kw", "")
+            for market in ("zh", "en")
+            for item in selected.get(market, [])
+        ]
+        reflow_candidates = build_reflow_candidates(
+            discovery_candidates,
+            comments_map,
+            existing_terms,
+            limit=48,
+        )
+        reflow_terms: list[dict[str, Any]] = []
+        if reflow_candidates:
+            try:
+                reflow_response = gemini.generate_json(
+                    stage="資料回流關鍵字",
+                    model=cfg["pipeline_model"],
+                    prompt=keyword_reflow_prompt(
+                        topic, reflow_candidates, existing_terms
+                    ),
+                    schema=KEYWORD_REFLOW_SCHEMA,
+                    max_output_tokens=800,
+                    thinking_level="low",
+                )
+                reflow_terms = validate_reflow_selection(
+                    reflow_response,
+                    reflow_candidates,
+                    existing_terms,
+                    MAX_REFLOW_TERMS,
+                )
+            except Exception:
+                reflow_terms = []
+
+        for item in reflow_terms:
+            market = item.get("market", "zh")
+            selected.setdefault(market, []).append(item)
+            query = _apply_negatives(item["kw"], plan.get("negative_keywords", []))
+            found = youtube.search_videos(
+                query,
+                market,
+                cfg["window_days"],
+                cfg["per_kw"],
+                "relevance",
+            )
+            merge_search_results(
+                pool_by_id,
+                found,
+                research_keyword=item["kw"],
+                market=market,
+                order="relevance",
+            )
+        all_videos = list(pool_by_id.values())
+        result["collection_stats"].update(
+            {
+                "reflow_terms": len(reflow_terms),
+                "final_unique_videos": len(all_videos),
+            }
+        )
+        result["selected_kws"] = selected
+        result["reflow_candidates"] = reflow_candidates
+        result["reflow_terms"] = reflow_terms
+        progress.update(
+            "正在比較不同來源…",
+            f"第一輪後從真實資料追加 {len(reflow_terms)} 個搜尋方向；"
+            f"目前共有 {len(all_videos)} 支去重候選。",
+        )
+
+        # 所有搜尋完成後才做一次完整頻道基準計算，避免第二輪重複花配額。
+        profiles = youtube.channel_profiles(
+            [video["channel_id"] for video in all_videos]
+        )
         attach_outlier_metrics_v2(all_videos, profiles, {})
         preliminary = sorted(
             all_videos,
-            key=lambda video: (video.get("evidence_score", 0), video.get("views_per_day", 0)),
+            key=lambda video: (
+                video.get("evidence_score", 0),
+                video.get("views_per_day", 0),
+            ),
             reverse=True,
         )
         baseline_channels = list(
@@ -357,8 +584,10 @@ def run_pipeline(
                 for video in preliminary
                 if video.get("channel_id")
             )
-        )[:18]
-        recent = youtube.recent_channel_videos(profiles, baseline_channels, max_results=15)
+        )[:20]
+        recent = youtube.recent_channel_videos(
+            profiles, baseline_channels, max_results=15
+        )
         attach_outlier_metrics_v2(all_videos, profiles, recent)
         try:
             observed_velocities = cache.record_video_observations(all_videos)
@@ -366,42 +595,38 @@ def run_pipeline(
         except Exception:
             rising_signals = derive_rising_signals(all_videos)
         coverage = market_coverage(all_videos)
-        selected_videos = pick_videos_diverse(
+        evidence_candidates = pick_videos_diverse(
             all_videos,
-            k=cfg["analyze_n"],
+            k=min(MAX_EVIDENCE_PROBES, max(cfg["analyze_n"] + 4, 10)),
             min_views=cfg["min_views"],
             en_share=0.6,
             video_type=cfg["video_type"],
         )
-        if not selected_videos:
-            selected_videos = sorted(
-                all_videos, key=lambda video: video.get("evidence_score", 0), reverse=True
-            )[: cfg["analyze_n"]]
+        if not evidence_candidates:
+            evidence_candidates = sorted(
+                all_videos,
+                key=lambda video: video.get("evidence_score", 0),
+                reverse=True,
+            )[:MAX_EVIDENCE_PROBES]
+        evidence_candidates = list(
+            {
+                video["id"]: video
+                for video in [*references_in_pool, *evidence_candidates]
+            }.values()
+        )[:MAX_EVIDENCE_PROBES]
+
+        comments_map = _collect_comments(youtube, evidence_candidates, comments_map)
+        transcript_map = _collect_transcripts(youtube, evidence_candidates)
+        selected_videos = pick_evidence_ready_videos(
+            evidence_candidates,
+            transcript_map,
+            comments_map,
+            cfg["analyze_n"],
+        )
         result["pool"] = all_videos
         result["market_coverage"] = coverage
         result["rising_signals"] = rising_signals
         result["analyzed_ids"] = [video["id"] for video in selected_videos]
-
-        transcript_map: dict[str, list[dict[str, Any]]] = {}
-        comments_map: dict[str, list[dict[str, Any]]] = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-            transcript_futures = {
-                executor.submit(
-                    youtube.transcript_segments, video["id"], video["market"]
-                ): video["id"]
-                for video in selected_videos
-            }
-            comment_futures = {
-                executor.submit(youtube.top_comments, video["id"]): video["id"]
-                for video in selected_videos
-            }
-            for future in concurrent.futures.as_completed(
-                [*transcript_futures.keys(), *comment_futures.keys()]
-            ):
-                if future in transcript_futures:
-                    transcript_map[transcript_futures[future]] = _safe_future_result(future)
-                else:
-                    comments_map[comment_futures[future]] = _safe_future_result(future)
 
         packets = [
             _video_packet(
@@ -411,6 +636,32 @@ def run_pipeline(
             )
             for video in selected_videos
         ]
+        result["evidence_stats"] = [
+            {
+                "video_id": video["id"],
+                "transcript_segments": len(transcript_map.get(video["id"], [])),
+                "comments_collected": len(comments_map.get(video["id"], [])),
+                "comments_sent": len(packet.get("comments", [])),
+                "source_quality": packet.get("source_quality", ""),
+            }
+            for video, packet in zip(selected_videos, packets)
+        ]
+        result["collection_stats"].update(
+            {
+                "evidence_candidates_checked": len(evidence_candidates),
+                "evidence_videos_analyzed": len(selected_videos),
+                "transcript_segments": sum(
+                    len(transcript_map.get(video["id"], []))
+                    for video in selected_videos
+                ),
+                "comments_collected": sum(
+                    len(comments_map.get(video["id"], [])) for video in selected_videos
+                ),
+                "comments_sent_to_model": sum(
+                    len(packet.get("comments", [])) for packet in packets
+                ),
+            }
+        )
         breakdowns = _analyze_packets(
             gemini,
             ledger,
@@ -422,36 +673,64 @@ def run_pipeline(
 
         progress.update(
             "正在整理切角…",
-            f"已讀取 {len(selected_videos)} 支影片的可用內容與留言證據。",
+            f"已從 {len(evidence_candidates)} 支候選中補位選出 "
+            f"{len(selected_videos)} 支可用證據影片。",
         )
+        compact_comments = {
+            packet["video_id"]: packet.get("comments", []) for packet in packets
+        }
+        synthesis = gemini.generate_json(
+            stage="跨來源比較歸納",
+            model=cfg["pipeline_model"],
+            prompt=research_synthesis_prompt(
+                topic,
+                selected,
+                reflow_terms,
+                breakdowns,
+                all_videos,
+                compact_comments,
+                rising_signals,
+            ),
+            schema=RESEARCH_SYNTHESIS_SCHEMA,
+            max_output_tokens=3_600,
+            thinking_level="low",
+            temperature=0.2,
+        )
+        synthesis = validate_research_synthesis(
+            synthesis,
+            all_videos,
+            compact_comments,
+        )
+        if not synthesis.get("cross_layer_insights"):
+            raise RuntimeError("跨來源資料不足，無法形成可追查的內容建議。")
+        result["research_synthesis"] = synthesis
+
         angle_report = gemini.generate_json(
             stage="切角雷達生成",
             model=cfg["report_model"],
             prompt=angle_report_prompt(
                 topic,
-                selected,
-                breakdowns,
+                synthesis,
                 all_videos,
-                rising_signals,
                 cfg["n_angles"],
                 exclusions,
                 references,
             ),
             schema=ANGLE_REPORT_SCHEMA,
-            max_output_tokens=6_500,
-            thinking_level="low",
+            max_output_tokens=5_200,
+            thinking_level="medium",
             temperature=0.3,
         )
-        angle_report["angles"] = angle_report.get("angles", [])[: cfg["n_angles"]]
+        angle_report["angles"] = angle_report.get("angles", [])[
+            : min(cfg["n_angles"], 6)
+        ]
         if not angle_report["angles"]:
             raise RuntimeError("模型沒有產出可用切角。")
         angle_report = validate_angle_evidence(
-            angle_report, all_videos, breakdowns, rising_signals
+            angle_report, all_videos, synthesis, rising_signals
         )
         result["angle_report"] = angle_report
-        result["report"] = render_angle_report(
-            angle_report, topic, all_videos, rising_signals, breakdowns
-        )
+        result["report"] = render_angle_report(angle_report, topic, all_videos)
         result["usage"] = ledger.summary()
         result["youtube_usage"] = youtube.usage()
         result["youtube_errors"] = youtube.errors
@@ -464,7 +743,7 @@ def run_pipeline(
 
 
 st.title("切角雷達")
-st.caption("輸入想拍的主題，找出通常要花時間搜尋、讀字幕與留言才會發現的切角。")
+st.caption("輸入一個主題，直接拿到可以拍什麼、怎麼拍，以及怎麼和現有內容拉開差異。")
 
 has_secret_keys = bool(_secret("GEMINI_API_KEY") and _secret("YOUTUBE_API_KEY"))
 with st.sidebar:
@@ -502,12 +781,12 @@ with st.sidebar:
             ["gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash"],
         )
         with st.expander("進階參數"):
-            N_ANGLES = st.slider("切角數", 5, 12, 8)
+            N_ANGLES = st.slider("切角上限", 4, 6, 6)
             N_EN = st.slider("英文查詢數", 2, 8, 4)
             N_ZH = st.slider("中文查詢數", 3, 10, 6)
             MINE_ROUNDS = st.slider("探索廣度", 1, 3, 2)
-            PER_KW = st.slider("每組候選數", 8, 25, 15)
-            ANALYZE_N = st.slider("證據分析影片數", 3, 8, 6)
+            PER_KW = st.slider("每組候選數", 15, 40, 25)
+            ANALYZE_N = st.slider("證據分析影片數", 5, 10, 8)
             WINDOW_DAYS = st.select_slider(
                 "內容時間範圍", options=[30, 90, 180, 365], value=180
             )
@@ -520,8 +799,8 @@ with st.sidebar:
     else:
         REPORT_MODEL = DEFAULT_REPORT_MODEL
         PIPELINE_MODEL = DEFAULT_PIPELINE_MODEL
-        N_ANGLES, N_EN, N_ZH, MINE_ROUNDS = 8, 4, 6, 2
-        PER_KW, ANALYZE_N, WINDOW_DAYS, MIN_VIEWS = 15, 6, 180, 3_000
+        N_ANGLES, N_EN, N_ZH, MINE_ROUNDS = 6, 4, 6, 2
+        PER_KW, ANALYZE_N, WINDOW_DAYS, MIN_VIEWS = 25, 8, 180, 3_000
         VIDEO_TYPE = "全部"
 
 
@@ -539,7 +818,7 @@ with st.expander("選填：縮小範圍"):
     )
     references = st.text_input(
         "已有的參考內容",
-        placeholder="可以貼頻道或影片網址；沒有就留空",
+        placeholder="可以貼一支或多支 YouTube 影片網址；沒有就留空",
         key="references_input",
     )
 
@@ -563,7 +842,9 @@ if run_clicked:
             if response.get("ok"):
                 consumed = True
                 may_run = True
-                st.session_state["_wl_remaining"] = int(response.get("remaining", 0) or 0)
+                st.session_state["_wl_remaining"] = int(
+                    response.get("remaining", 0) or 0
+                )
             else:
                 st.error(_WL_ERR.get(response.get("error", ""), "額度不足或服務異常"))
         if may_run:
@@ -606,7 +887,13 @@ if run_clicked:
 if "radar_result" in st.session_state:
     result = st.session_state["radar_result"]
     st.markdown("---")
-    st.markdown(result["report"])
+    st.markdown(f"# 「{result['topic']}」可以怎麼拍")
+    st.markdown(result["angle_report"].get("radar_summary", ""))
+    for index, angle in enumerate(result["angle_report"].get("angles", []), start=1):
+        with st.container(border=True):
+            st.markdown(render_action_card(angle, index))
+            with st.expander("查看來源與限制"):
+                st.markdown(render_action_evidence(angle, result["pool"]))
 
     st.markdown("---")
     st.markdown("# 把切角交給你的 AI")
@@ -647,7 +934,9 @@ if "radar_result" in st.session_state:
             key="angle_feedback_note",
         )
         if st.button("送出回饋", key="submit_angle_feedback"):
-            if st.session_state.get("feedback_submitted_for") == result.get("created_at"):
+            if st.session_state.get("feedback_submitted_for") == result.get(
+                "created_at"
+            ):
                 st.info("這份報告已經回覆過了，謝謝你。")
             else:
                 saved = True
@@ -663,7 +952,9 @@ if "radar_result" in st.session_state:
                     )
                     saved = bool(feedback_response.get("ok"))
                 if saved:
-                    st.session_state["feedback_submitted_for"] = result.get("created_at")
+                    st.session_state["feedback_submitted_for"] = result.get(
+                        "created_at"
+                    )
                     st.success("收到，謝謝你的回饋。")
                 else:
                     st.warning("目前無法儲存，請稍後再試。")
@@ -679,7 +970,9 @@ if "radar_result" in st.session_state:
             f"{usage.get('output_tokens', 0) + usage.get('thinking_tokens', 0):,}",
         )
         metric_cols[2].metric("本機快取命中", usage.get("local_cache_hits", 0))
-        metric_cols[3].metric("推估 Gemini 成本", f"NT${usage.get('estimated_twd', 0):.2f}")
+        metric_cols[3].metric(
+            "推估 Gemini 成本", f"NT${usage.get('estimated_twd', 0):.2f}"
+        )
         st.caption(f"價格基準日 {usage.get('pricing_date', '—')}；估算不等同實際帳單。")
 
         with st.expander("模型使用明細"):
@@ -688,16 +981,25 @@ if "radar_result" in st.session_state:
                 st.dataframe(pd.DataFrame(usage_rows), width="stretch", hide_index=True)
 
         with st.expander("關鍵字與查詢診斷"):
+            st.json({"資料漏斗": result.get("collection_stats", {})})
             st.json(result.get("keyword_plan", {}))
             st.json(result.get("selected_kws", {}))
+            st.json({"資料回流詞": result.get("reflow_terms", [])})
             st.json(result.get("mining_log", {}))
             st.caption(f"YouTube 呼叫：{result.get('youtube_usage', {})}")
             if result.get("youtube_errors"):
                 st.json(result["youtube_errors"])
 
+        with st.expander("三層比較與跨層歸納"):
+            st.json(result.get("research_synthesis", {}))
+
         with st.expander("樣本與影片評分"):
             st.json(result.get("market_coverage", {}))
             st.json({"rising_signals": result.get("rising_signals", [])})
+            evidence_stats = {
+                item.get("video_id", ""): item
+                for item in result.get("evidence_stats", [])
+            }
             rows = [
                 {
                     "樣本": MARKET_LABEL.get(video.get("market"), video.get("market")),
@@ -708,7 +1010,17 @@ if "radar_result" in st.session_state:
                     "近期基準倍數": video.get("outlier_ratio"),
                     "基準樣本": video.get("baseline_sample_size"),
                     "證據分": video.get("evidence_score"),
+                    "命中搜尋詞數": len(video.get("keyword_hits", [])),
                     "已分析": video.get("id") in result.get("analyzed_ids", []),
+                    "字幕段數": evidence_stats.get(video.get("id", ""), {}).get(
+                        "transcript_segments", 0
+                    ),
+                    "留言抓取": evidence_stats.get(video.get("id", ""), {}).get(
+                        "comments_collected", 0
+                    ),
+                    "留言送模型": evidence_stats.get(video.get("id", ""), {}).get(
+                        "comments_sent", 0
+                    ),
                     "連結": video.get("url"),
                 }
                 for video in sorted(

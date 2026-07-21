@@ -5,11 +5,16 @@ from radar_core import (
     attach_outlier_metrics_v2,
     brief_quality,
     build_brief,
+    build_reflow_candidates,
     build_search_terms,
     build_transcript_evidence,
     compress_comments,
     derive_rising_signals,
+    merge_search_results,
+    parse_youtube_video_ids,
+    pick_evidence_ready_videos,
     pick_videos_diverse,
+    validate_reflow_selection,
 )
 
 
@@ -54,6 +59,90 @@ class EvidenceTests(unittest.TestCase):
 
 
 class KeywordTests(unittest.TestCase):
+    def test_reference_urls_parse_only_real_video_ids(self):
+        ids = parse_youtube_video_ids(
+            "https://youtu.be/abcdefghijk 和 "
+            "https://www.youtube.com/shorts/ABCDEFGHIJK?feature=share 不是普通文字"
+        )
+        self.assertEqual(ids, ["abcdefghijk", "ABCDEFGHIJK"])
+
+    def test_duplicate_video_keeps_every_keyword_hit(self):
+        pool = {}
+        video = {"id": "video-1", "title": "同一支", "tags": ["接案"]}
+        merge_search_results(
+            pool,
+            [video],
+            research_keyword="命理創業",
+            market="zh",
+            order="relevance",
+        )
+        merge_search_results(
+            pool,
+            [{**video, "tags": ["第一次收費"]}],
+            research_keyword="命理師收費",
+            market="zh",
+            order="date",
+        )
+        self.assertEqual(len(pool["video-1"]["keyword_hits"]), 2)
+        self.assertEqual(pool["video-1"]["tags"], ["接案", "第一次收費"])
+
+    def test_reflow_is_locked_to_sourced_candidate_and_deduplicated(self):
+        videos = [
+            {
+                "id": "video-1",
+                "title": "命理師第一次收費怎麼做",
+                "market": "zh",
+                "tags": ["命理師收費", "第一批客戶"],
+            }
+        ]
+        comments = {
+            "video-1": [
+                {
+                    "comment_id": "c1",
+                    "ref": "video-1:c1",
+                    "text": "免費練習到什麼時候才能收費？",
+                    "likes": 12,
+                    "replies": 3,
+                }
+            ]
+        }
+        candidates = build_reflow_candidates(videos, comments, ["命理創業"])
+        comment_candidate = next(
+            item for item in candidates if item["source_kind"] == "comment"
+        )
+        response = {
+            "terms": [
+                {
+                    "candidate_id": comment_candidate["candidate_id"],
+                    "query": "命理師什麼時候開始收費",
+                    "reason": "補上收費時機",
+                },
+                {
+                    "candidate_id": "R999",
+                    "query": "完全無關",
+                    "reason": "假的",
+                },
+            ]
+        }
+        selected = validate_reflow_selection(response, candidates, ["命理創業"], 4)
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["source_video_ids"], ["video-1"])
+        self.assertEqual(selected[0]["market"], "zh")
+
+    def test_evidence_selection_refills_missing_transcript_video(self):
+        candidates = [
+            {"id": "empty", "evidence_score": 100},
+            {"id": "ready-1", "evidence_score": 80},
+            {"id": "ready-2", "evidence_score": 70},
+        ]
+        selected = pick_evidence_ready_videos(
+            candidates,
+            {"ready-1": [{"text": "字幕"}]},
+            {"ready-2": [{"text": str(index)} for index in range(4)]},
+            2,
+        )
+        self.assertEqual({item["id"] for item in selected}, {"ready-1", "ready-2"})
+
     def test_one_plan_keeps_short_terms_questions_and_problems(self):
         plan = {
             "core_terms": ["算命", "算命創業"],
@@ -76,7 +165,9 @@ class KeywordTests(unittest.TestCase):
         self.assertIn("命理個人品牌", zh_terms)
         self.assertIn("算命師如何開始接案", zh_terms)
         self.assertLessEqual(len(zh_terms), 7)
-        self.assertIn("spiritual business mistakes", [item["kw"] for item in selected["en"]])
+        self.assertIn(
+            "spiritual business mistakes", [item["kw"] for item in selected["en"]]
+        )
         self.assertEqual(len(selected["en"]), 3)
 
 
