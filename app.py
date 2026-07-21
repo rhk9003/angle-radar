@@ -713,7 +713,7 @@ def run_pipeline(
         compact_comments = {
             packet["video_id"]: packet.get("comments", []) for packet in packets
         }
-        synthesis = gemini.generate_json(
+        raw_synthesis = gemini.generate_json(
             stage="跨來源比較歸納",
             model=cfg["pipeline_model"],
             prompt=research_synthesis_prompt(
@@ -733,12 +733,36 @@ def run_pipeline(
             temperature=0.2,
         )
         synthesis = validate_research_synthesis(
-            synthesis,
+            raw_synthesis,
             all_videos,
             compact_comments,
         )
         if not synthesis.get("cross_layer_insights"):
-            raise RuntimeError("跨來源資料不足，無法形成可追查的內容建議。")
+            if "findings" in raw_synthesis:
+                raw_cross_count = sum(
+                    1
+                    for item in raw_synthesis.get("findings", [])
+                    if str(item.get("item_type", "")) == "cross"
+                )
+            else:
+                raw_cross_count = len(raw_synthesis.get("cross_layer_insights", []))
+            valid_counts = {
+                key: sum(
+                    bool(item.get("valid_for_cross")) for item in synthesis.get(key, [])
+                )
+                for key in (
+                    "demand_patterns",
+                    "supply_patterns",
+                    "audience_patterns",
+                )
+            }
+            raise RuntimeError(
+                "跨來源歸納未通過來源驗證"
+                f"（有效需求 {valid_counts['demand_patterns']}、"
+                f"有效供給 {valid_counts['supply_patterns']}、"
+                f"有效留言 {valid_counts['audience_patterns']}、"
+                f"模型跨層原始 {raw_cross_count}、驗證後 0）。"
+            )
         result["research_synthesis"] = synthesis
 
         angle_report = gemini.generate_json(

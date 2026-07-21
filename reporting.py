@@ -505,6 +505,8 @@ def research_synthesis_prompt(
 - supply 項目若聲稱同質化、差異或空白，至少引用 2 支影片；audience 項目必須引用真實 comment_refs。
 - source_video_ids 與 comment_refs 只能使用素材中的真實 ID。
 - detail 要清楚寫出共通、差異、矛盾或空白；禁止只寫「值得關注」「觀眾有興趣」。
+- 證據足夠時，demand、supply、audience 各寫 2–3 項，cross 寫 3–5 項；findings 總數最多 14 項。
+- 已有至少兩層有效結論時，必須產出 cross，且每個 cross 都要引用實際支持它的 D/S/A item_id。
 - 搜尋建議分數不等於搜尋量；觀看數不等於需求規模；早期訊號不可寫成已成趨勢。
 - 英文內容只能視為可轉譯的情境證據，不代表本地觀眾必然相同。
 - 資料不足就少寫，不要湊滿欄位。
@@ -589,6 +591,47 @@ def validate_research_synthesis(
         if comment.get("ref")
     }
 
+    def normalize_keyword(value: Any) -> str:
+        return re.sub(r"[\W_]+", "", str(value or "").casefold())
+
+    keyword_sources: dict[str, list[str]] = {}
+    for video in pool_videos:
+        video_id = str(video.get("id", ""))
+        if not video_id:
+            continue
+        raw_keywords = [
+            video.get("research_keyword", ""),
+            video.get("source_keyword", ""),
+            *(
+                hit.get("keyword", "")
+                for hit in video.get("keyword_hits", [])
+                if isinstance(hit, dict)
+            ),
+        ]
+        for raw_keyword in raw_keywords:
+            keyword = normalize_keyword(raw_keyword)
+            if keyword:
+                keyword_sources.setdefault(keyword, [])
+                if video_id not in keyword_sources[keyword]:
+                    keyword_sources[keyword].append(video_id)
+
+    def sources_for_keywords(values: list[Any] | None) -> list[str]:
+        matched = []
+        for value in values or []:
+            keyword = normalize_keyword(value)
+            if not keyword:
+                continue
+            exact = keyword_sources.get(keyword, [])
+            related = [
+                video_id
+                for known_keyword, source_ids in keyword_sources.items()
+                if min(len(keyword), len(known_keyword)) >= 3
+                and (keyword in known_keyword or known_keyword in keyword)
+                for video_id in source_ids
+            ]
+            matched.extend([*exact, *related])
+        return list(dict.fromkeys(matched))
+
     def clean_items(items: list[dict[str, Any]], prefix: str) -> list[dict[str, Any]]:
         output = []
         for item in items:
@@ -608,6 +651,11 @@ def validate_research_synthesis(
                             if str(video_id) in video_ids
                         ),
                         *(comment_to_video[ref] for ref in valid_comments),
+                        *(
+                            sources_for_keywords(item.get("evidence_keywords", []))
+                            if prefix == "D"
+                            else []
+                        ),
                     ]
                 )
             )[:5]
@@ -711,16 +759,22 @@ def validate_research_synthesis(
         )
         if len(layers) < 2:
             continue
-        allowed_sources = {
-            str(video_id)
-            for pattern_id in support_ids
-            for video_id in patterns[pattern_id].get("source_video_ids", [])
-        }
-        allowed_comments = {
-            str(ref)
-            for pattern_id in support_ids
-            for ref in patterns[pattern_id].get("comment_refs", [])
-        }
+        allowed_source_list = list(
+            dict.fromkeys(
+                str(video_id)
+                for pattern_id in support_ids
+                for video_id in patterns[pattern_id].get("source_video_ids", [])
+            )
+        )
+        allowed_sources = set(allowed_source_list)
+        allowed_comment_list = list(
+            dict.fromkeys(
+                str(ref)
+                for pattern_id in support_ids
+                for ref in patterns[pattern_id].get("comment_refs", [])
+            )
+        )
+        allowed_comments = set(allowed_comment_list)
         valid_comments = list(
             dict.fromkeys(
                 str(ref)
@@ -728,9 +782,12 @@ def validate_research_synthesis(
                 if str(ref) in allowed_comments
             )
         )[:5]
+        if not valid_comments and "audience" in layers:
+            valid_comments = allowed_comment_list[:5]
         valid_sources = list(
             dict.fromkeys(
                 [
+                    *allowed_source_list,
                     *(
                         str(video_id)
                         for video_id in item.get("source_video_ids", [])

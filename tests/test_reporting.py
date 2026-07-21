@@ -237,6 +237,91 @@ class ReportingTests(unittest.TestCase):
             ["video-1", "video-2"],
         )
 
+    def test_demand_sources_are_inherited_from_real_keyword_hits(self):
+        raw = {
+            "demand_patterns": [
+                {
+                    "finding": "搜尋措辭集中在第一次收費",
+                    "detail": "不同問句都在找收費時機",
+                    "evidence_keywords": ["命理師 第一次收費"],
+                    "source_video_ids": [],
+                    "comment_refs": [],
+                    "confidence": "medium",
+                }
+            ],
+            "supply_patterns": [],
+            "audience_patterns": [],
+            "cross_layer_insights": [],
+        }
+        videos = [
+            {
+                "id": "video-1",
+                "keyword_hits": [{"keyword": "命理師第一次收費", "rank": 2}],
+            },
+            {
+                "id": "video-2",
+                "research_keyword": "命理師第一次收費 時機",
+            },
+        ]
+        checked = validate_research_synthesis(raw, videos, {})
+        demand = checked["demand_patterns"][0]
+        self.assertEqual(demand["source_video_ids"], ["video-1", "video-2"])
+        self.assertTrue(demand["valid_for_cross"])
+
+    def test_cross_insight_inherits_sources_from_valid_support_patterns(self):
+        raw = {
+            "demand_patterns": [
+                {
+                    "finding": "大家在問第一次收費",
+                    "detail": "多個搜尋詞指向相同時機問題",
+                    "evidence_keywords": ["第一次收費"],
+                    "source_video_ids": ["video-1"],
+                    "comment_refs": [],
+                    "confidence": "medium",
+                }
+            ],
+            "supply_patterns": [
+                {
+                    "finding": "影片只談收入",
+                    "detail": "兩支影片都沒有交代收費前的判斷",
+                    "evidence_keywords": [],
+                    "source_video_ids": ["video-1", "video-2"],
+                    "comment_refs": [],
+                    "confidence": "medium",
+                }
+            ],
+            "audience_patterns": [
+                {
+                    "finding": "留言追問收費時機",
+                    "detail": "觀眾留下具體問題",
+                    "evidence_keywords": [],
+                    "source_video_ids": [],
+                    "comment_refs": ["video-2:c1"],
+                    "confidence": "medium",
+                }
+            ],
+            "cross_layer_insights": [
+                {
+                    "finding": "第一次收費是可追查的供需缺口",
+                    "implication": "可拍成判斷型影片",
+                    "layers": ["demand", "supply", "audience"],
+                    "support_pattern_ids": ["D1", "S1", "A1"],
+                    "source_video_ids": [],
+                    "comment_refs": [],
+                    "confidence": "medium",
+                }
+            ],
+        }
+        checked = validate_research_synthesis(
+            raw,
+            [{"id": "video-1"}, {"id": "video-2"}],
+            {"video-2": [{"ref": "video-2:c1", "text": "何時能收費？"}]},
+        )
+        insight = checked["cross_layer_insights"][0]
+        self.assertEqual(insight["source_video_ids"], ["video-1", "video-2"])
+        self.assertEqual(insight["comment_refs"], ["video-2:c1"])
+        self.assertEqual(insight["support_pattern_ids"], ["D1", "S1", "A1"])
+
     def test_final_angle_sources_are_locked_to_validated_insights(self):
         report = {
             "radar_summary": "可以優先回答第一次收費。",
@@ -297,6 +382,8 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("item_type=audience", prompt)
         self.assertIn("support_ids", prompt)
         self.assertIn("至少引用 2 支影片", prompt)
+        self.assertIn("cross 寫 3–5 項", prompt)
+        self.assertIn("findings 總數最多 14 項", prompt)
 
     def test_public_report_is_an_action_card_not_a_research_report(self):
         report = {
