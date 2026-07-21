@@ -1,6 +1,7 @@
 import unittest
 
 from reporting import (
+    BREAKDOWN_BATCH_SCHEMA,
     angle_development_prompt,
     angle_report_prompt,
     keyword_reflow_prompt,
@@ -53,6 +54,11 @@ def validated_synthesis():
 
 
 class ReportingTests(unittest.TestCase):
+    def test_breakdown_schema_stays_small_and_flat(self):
+        videos = BREAKDOWN_BATCH_SCHEMA["properties"]["videos"]
+        self.assertEqual(videos["maxItems"], 4)
+        self.assertNotIn("audience_questions", videos["items"]["properties"])
+
     def test_development_prompt_is_actionable_without_internal_method(self):
         prompt = angle_development_prompt(
             "命理創業",

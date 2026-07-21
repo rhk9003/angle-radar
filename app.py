@@ -59,7 +59,8 @@ st.set_page_config(page_title="切角雷達", layout="wide")
 
 DEFAULT_PIPELINE_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_REPORT_MODEL = "gemini-3.5-flash"
-BREAKDOWN_PROMPT_VERSION = "angle-evidence-v4"
+BREAKDOWN_PROMPT_VERSION = "angle-evidence-v5"
+BREAKDOWN_BATCH_SIZE = 4
 MAX_REFLOW_TERMS = 4
 MAX_DISCOVERY_VIDEOS = 10
 MAX_EVIDENCE_PROBES = 12
@@ -217,7 +218,6 @@ def _fallback_breakdown(packet: dict[str, Any]) -> dict[str, Any]:
         "breakout_reasons": ["只有影片數據，無法可靠判斷內容機制。"],
         "reusable_angles": [],
         "comment_gaps": [],
-        "audience_questions": [],
         "evidence_notes": [],
         "confidence": "low",
     }
@@ -245,16 +245,17 @@ def _analyze_packets(
         else:
             misses.append(packet)
 
-    if misses:
+    for start in range(0, len(misses), BREAKDOWN_BATCH_SIZE):
+        batch = misses[start : start + BREAKDOWN_BATCH_SIZE]
         response = gemini.generate_json(
             stage="影片證據分析",
             model=model,
-            prompt=breakdown_batch_prompt(misses),
+            prompt=breakdown_batch_prompt(batch),
             schema=BREAKDOWN_BATCH_SCHEMA,
-            max_output_tokens=min(6_000, 950 * len(misses) + 600),
-            thinking_level="low",
+            max_output_tokens=min(3_800, 800 * len(batch) + 500),
+            thinking_level=None,
         )
-        valid_ids = {packet["video_id"] for packet in misses}
+        valid_ids = {packet["video_id"] for packet in batch}
         for breakdown in response.get("videos", []):
             video_id = str(breakdown.get("video_id", ""))
             if video_id in valid_ids:

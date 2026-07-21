@@ -99,28 +99,6 @@ BREAKDOWN_ITEM_SCHEMA = {
             "items": {"type": "string"},
             "maxItems": 3,
         },
-        "audience_questions": {
-            "type": "array",
-            "maxItems": 4,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "comment_ref": {"type": "string"},
-                    "question": {"type": "string"},
-                    "need_type": {
-                        "type": "string",
-                        "enum": [
-                            "question",
-                            "request",
-                            "comparison",
-                            "objection",
-                            "pain",
-                        ],
-                    },
-                },
-                "required": ["comment_ref", "question", "need_type"],
-            },
-        },
         "evidence_notes": {
             "type": "array",
             "items": {"type": "string"},
@@ -137,7 +115,6 @@ BREAKDOWN_ITEM_SCHEMA = {
         "breakout_reasons",
         "reusable_angles",
         "comment_gaps",
-        "audience_questions",
         "evidence_notes",
         "confidence",
     ],
@@ -258,7 +235,7 @@ BREAKDOWN_BATCH_SCHEMA = {
         "videos": {
             "type": "array",
             "items": BREAKDOWN_ITEM_SCHEMA,
-            "maxItems": 10,
+            "maxItems": 4,
         }
     },
     "required": ["videos"],
@@ -455,7 +432,6 @@ def breakdown_batch_prompt(packets: list[dict[str, Any]]) -> str:
 - hook_timestamp 必須填證據包內存在的 MM:SS，找不到填空字串。
 - breakout_reasons 要區分數據表現與內容機制推測。
 - comment_gaps 只能摘錄或緊密改寫留言中的追問、爭論與未解問題；沒有就回空陣列。
-- audience_questions 只能使用留言包內真實存在的 ref；question 緊密改寫該留言，need_type 依留言需求分類。
 - reusable_angles 只寫來源內容能支持的延伸方向，不要產出完整企劃。
 - evidence_notes 寫支撐判斷的時間碼或留言訊號，保持精簡。
 - confidence 依字幕、留言及基準樣本完整度判斷。

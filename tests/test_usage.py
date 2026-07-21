@@ -13,6 +13,33 @@ class FakeUsage:
 
 
 class UsageTests(unittest.TestCase):
+    def test_generate_retries_generic_invalid_argument_without_thinking(self):
+        response = type("Response", (), {"usage_metadata": {}})()
+        models = Mock()
+        models.generate_content = Mock(
+            side_effect=[ValueError("400 INVALID_ARGUMENT"), response]
+        )
+        client = object.__new__(GeminiClient)
+        client._client = type("Client", (), {"models": models})()
+        client._ledger = Mock()
+        client._config = Mock(return_value={})
+
+        result = client._generate(
+            stage="evidence",
+            model="test-model",
+            contents="test",
+            schema={"type": "object"},
+            max_output_tokens=1_000,
+            temperature=0.2,
+            thinking_level="low",
+        )
+
+        self.assertIs(result, response)
+        self.assertEqual(
+            client._config.call_args_list[0].kwargs["thinking_level"], "low"
+        )
+        self.assertIsNone(client._config.call_args_list[1].kwargs["thinking_level"])
+
     def test_cost_includes_thinking_tokens(self):
         ledger = UsageLedger()
         ledger.record("test", "gemini-3.1-flash-lite", FakeUsage())
@@ -28,8 +55,16 @@ class UsageTests(unittest.TestCase):
         client = object.__new__(GeminiClient)
         client._generate = Mock(
             side_effect=[
-                type("Response", (), {"parsed": None, "text": '{"cards":[', "candidates": []})(),
-                type("Response", (), {"parsed": None, "text": '{"cards":[]}', "candidates": []})(),
+                type(
+                    "Response",
+                    (),
+                    {"parsed": None, "text": '{"cards":[', "candidates": []},
+                )(),
+                type(
+                    "Response",
+                    (),
+                    {"parsed": None, "text": '{"cards":[]}', "candidates": []},
+                )(),
             ]
         )
         result = client.generate_json(

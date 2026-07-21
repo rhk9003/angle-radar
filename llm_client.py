@@ -93,10 +93,16 @@ class UsageLedger:
             usage, "candidates_token_count", "output_token_count", "total_output_tokens"
         )
         thinking_tokens = _read_value(
-            usage, "thoughts_token_count", "thinking_token_count", "total_thought_tokens"
+            usage,
+            "thoughts_token_count",
+            "thinking_token_count",
+            "total_thought_tokens",
         )
         cached_tokens = _read_value(
-            usage, "cached_content_token_count", "cached_token_count", "total_cached_tokens"
+            usage,
+            "cached_content_token_count",
+            "cached_token_count",
+            "total_cached_tokens",
         )
         total_tokens = _read_value(usage, "total_token_count", "total_tokens")
         if not total_tokens:
@@ -137,10 +143,14 @@ class UsageLedger:
         return {
             "input_tokens": sum(int(record["input_tokens"]) for record in records),
             "output_tokens": sum(int(record["output_tokens"]) for record in records),
-            "thinking_tokens": sum(int(record["thinking_tokens"]) for record in records),
+            "thinking_tokens": sum(
+                int(record["thinking_tokens"]) for record in records
+            ),
             "cached_tokens": sum(int(record["cached_tokens"]) for record in records),
             "total_tokens": sum(int(record["total_tokens"]) for record in records),
-            "local_cache_hits": sum(bool(record["local_cache_hit"]) for record in records),
+            "local_cache_hits": sum(
+                bool(record["local_cache_hit"]) for record in records
+            ),
             "estimated_usd": round(estimated_usd, 6),
             "estimated_twd": round(estimated_usd * usd_to_twd, 2),
             "records": records,
@@ -154,7 +164,9 @@ class GeminiClient:
             from google import genai
             from google.genai import types
         except ImportError as exc:  # pragma: no cover - 只在依賴缺漏時發生
-            raise RuntimeError("缺少 google-genai，請先執行 pip install -r requirements.txt") from exc
+            raise RuntimeError(
+                "缺少 google-genai，請先執行 pip install -r requirements.txt"
+            ) from exc
         self._types = types
         self._client = genai.Client(api_key=api_key)
         self._ledger = ledger
@@ -210,17 +222,34 @@ class GeminiClient:
                         media_resolution_low=active_resolution,
                     ),
                 )
-                self._ledger.record(stage, model, getattr(response, "usage_metadata", {}))
+                self._ledger.record(
+                    stage, model, getattr(response, "usage_metadata", {})
+                )
                 return response
             except Exception as exc:  # API SDK 會丟不同型別的例外
                 last_error = exc
                 message = str(exc).lower()
+                changed_config = False
                 if "thinking" in message:
                     active_thinking = None
+                    changed_config = True
                 if "media_resolution" in message or "media resolution" in message:
                     active_resolution = False
+                    changed_config = True
+                if (
+                    "invalid_argument" in message or "invalid argument" in message
+                ) and active_thinking:
+                    # 新模型偶爾會將不相容的 thinking 組合只回報通用 400。
+                    # 先以相同內容、不附 thinking config 重試一次。
+                    active_thinking = None
+                    changed_config = True
+                if (
+                    "invalid_argument" in message or "invalid argument" in message
+                ) and not changed_config:
+                    break
                 if attempt < 2:
-                    time.sleep(1.5 * (attempt + 1))
+                    if not changed_config:
+                        time.sleep(1.5 * (attempt + 1))
         raise RuntimeError(f"Gemini 呼叫失敗（{stage}）：{last_error}") from last_error
 
     def generate_json(
@@ -232,7 +261,7 @@ class GeminiClient:
         contents: Any | None = None,
         schema: dict[str, Any],
         max_output_tokens: int,
-        thinking_level: str = "low",
+        thinking_level: str | None = "low",
         temperature: float = 0.2,
         media_resolution_low: bool = False,
     ) -> dict[str, Any]:
