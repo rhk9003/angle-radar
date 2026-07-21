@@ -1,6 +1,7 @@
 import unittest
 
 from reporting import (
+    ANGLE_REPORT_SCHEMA,
     BREAKDOWN_BATCH_SCHEMA,
     RESEARCH_SYNTHESIS_SCHEMA,
     angle_development_prompt,
@@ -254,8 +255,9 @@ class ReportingTests(unittest.TestCase):
             ],
             6,
         )
-        self.assertIn("最多提出 6 張行動卡", prompt)
-        self.assertIn("不足就少給", prompt)
+        self.assertIn("請提出 4–6 張行動卡", prompt)
+        self.assertIn("同一個已驗證洞察可以支撐多張卡", prompt)
+        self.assertEqual(ANGLE_REPORT_SCHEMA["properties"]["angles"]["minItems"], 4)
         self.assertIn("不設配額", prompt)
         self.assertIn("opening_line", prompt)
         self.assertNotIn("2 個 cross_context_adaptation", prompt)
