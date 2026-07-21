@@ -14,6 +14,7 @@ from radar_core import (
     parse_youtube_video_ids,
     pick_evidence_ready_videos,
     pick_videos_diverse,
+    usage_quota_required,
     validate_reflow_selection,
 )
 
@@ -34,6 +35,11 @@ class BriefTests(unittest.TestCase):
         self.assertLess(minimal_score, complete_score)
         self.assertIn("目標觀眾", minimal_missing)
         self.assertNotIn("目標觀眾", complete_missing)
+
+    def test_admin_does_not_consume_trial_quota(self):
+        self.assertFalse(usage_quota_required(True, True))
+        self.assertTrue(usage_quota_required(True, False))
+        self.assertFalse(usage_quota_required(False, False))
 
 
 class EvidenceTests(unittest.TestCase):

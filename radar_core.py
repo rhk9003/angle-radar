@@ -19,6 +19,11 @@ MARKET_LABEL = {"zh": "中文樣本", "en": "英文樣本"}
 CONFIDENCE_LABEL = {"high": "高", "medium": "中", "low": "低"}
 
 
+def usage_quota_required(whitelist_enabled: bool, is_admin: bool) -> bool:
+    """管理者不走試用次數 consume；一般白名單使用者才需要額度。"""
+    return bool(whitelist_enabled and not is_admin)
+
+
 def parse_iso_duration(duration_str: str) -> float:
     match = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration_str or "")
     if not match:

@@ -79,6 +79,8 @@ API 金鑰只應放在 Streamlit Secrets，不能提交進 GitHub。公開部署
 
 管理者完成每次分析後，可以在診斷區看到實際 token、thinking tokens、推估 Gemini 成本、YouTube 呼叫數與估算配額單位；該數字不會顯示給一般測試者。
 
+`ADMIN_CODE` 對應的管理者帳號仍需存在白名單中供登入驗證，但不顯示、不檢查也不扣除 `remaining`；試用次數只限制一般測試者。
+
 ## 隱私與公開原始碼提醒
 
 - `.streamlit/secrets.toml`、`.env` 與 key 檔已被 `.gitignore` 排除。
