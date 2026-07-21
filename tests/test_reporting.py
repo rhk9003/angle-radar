@@ -3,9 +3,12 @@ import unittest
 from reporting import (
     ANGLE_REPORT_SCHEMA,
     BREAKDOWN_BATCH_SCHEMA,
+    KEYWORD_PLAN_SCHEMA,
+    KEYWORD_REFLOW_SCHEMA,
     RESEARCH_SYNTHESIS_SCHEMA,
     angle_development_prompt,
     angle_report_prompt,
+    build_comparison_matrix,
     keyword_reflow_prompt,
     render_angle_report,
     research_synthesis_prompt,
@@ -101,8 +104,19 @@ class ReportingTests(unittest.TestCase):
             ["命理創業"],
         )
         self.assertIn("R001", prompt)
-        self.assertIn("最多選 4 個", prompt)
+        self.assertIn("最多選 2 個", prompt)
         self.assertIn("不可自創", prompt)
+
+    def test_keyword_plan_splits_core_and_question_axes(self):
+        from reporting import keyword_plan_prompt
+
+        prompt = keyword_plan_prompt("我想開始做命理服務但不知道怎麼找客戶")
+        self.assertIn("拆成「核心字」與「問題字」", prompt)
+        self.assertIn("不要直接把使用者整句話改寫", prompt)
+        self.assertIn("命理創業", prompt)
+        self.assertIn("沒客戶怎麼辦", prompt)
+        self.assertNotIn("problem_terms", KEYWORD_PLAN_SCHEMA["properties"])
+        self.assertEqual(KEYWORD_REFLOW_SCHEMA["properties"]["terms"]["maxItems"], 2)
 
     def test_source_title_is_a_seed_not_a_competitor_brief(self):
         from reporting import keyword_plan_prompt
@@ -340,6 +354,18 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(angle["internal_signal_type"], "audience_gap")
         self.assertEqual(angle["confidence"], "medium")
 
+    def test_final_angle_keeps_multiple_sources_from_aggregated_insight(self):
+        report = {"radar_summary": "摘要", "angles": [action_card()]}
+        checked = validate_angle_evidence(
+            report,
+            [{"id": "video-1"}, {"id": "video-2"}],
+            validated_synthesis(),
+        )
+        self.assertEqual(
+            checked["angles"][0]["evidence_video_ids"],
+            ["video-1", "video-2"],
+        )
+
     def test_action_prompt_uses_strength_not_fixed_category_quotas(self):
         prompt = angle_report_prompt(
             "命理創業",
@@ -359,6 +385,8 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(ANGLE_REPORT_SCHEMA["properties"]["angles"]["minItems"], 4)
         self.assertIn("不設配額", prompt)
         self.assertIn("opening_line", prompt)
+        self.assertIn("用標題版圖與中文／海外差異", prompt)
+        self.assertIn("換成哪個本地情境", prompt)
         self.assertNotIn("2 個 cross_context_adaptation", prompt)
 
     def test_research_prompt_explicitly_compares_three_layers(self):
@@ -384,6 +412,61 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("至少引用 2 支影片", prompt)
         self.assertIn("cross 寫 3–5 項", prompt)
         self.assertIn("findings 總數最多 14 項", prompt)
+        self.assertIn("comparison_matrix", prompt)
+        self.assertIn("單支影片的亮點只能當線索", prompt)
+        self.assertIn("標題決定「有哪些方向可以拍」", prompt)
+        self.assertIn("中文與英文標題", prompt)
+        self.assertIn("內容應補什麼", prompt)
+
+    def test_comparison_matrix_aggregates_queries_and_comments_across_videos(self):
+        matrix = build_comparison_matrix(
+            [
+                {
+                    "id": "video-1",
+                    "title": "命理創業怎麼開始",
+                    "channel_id": "channel-1",
+                    "market": "zh",
+                    "keyword_hits": [
+                        {"keyword": "命理創業", "market": "zh", "order": "relevance"},
+                        {
+                            "keyword": "命理創業 怎麼開始",
+                            "market": "zh",
+                            "order": "viewCount",
+                        },
+                    ],
+                },
+                {
+                    "id": "video-2",
+                    "title": "命理創業第一步",
+                    "channel_id": "channel-2",
+                    "market": "zh",
+                    "keyword_hits": [
+                        {"keyword": "命理創業", "market": "zh", "order": "date"}
+                    ],
+                },
+            ],
+            {
+                "video-1": [{"ref": "video-1:c1", "comment_kind": "question"}],
+                "video-2": [{"ref": "video-2:c1", "comment_kind": "question"}],
+            },
+        )
+        coverage = next(
+            item for item in matrix["keyword_coverage"] if item["keyword"] == "命理創業"
+        )
+        self.assertEqual(coverage["video_count"], 2)
+        self.assertEqual(coverage["channel_count"], 2)
+        self.assertEqual(
+            {item["video_id"] for item in matrix["title_landscape"]},
+            {"video-1", "video-2"},
+        )
+        self.assertEqual(matrix["multi_query_videos"][0]["video_id"], "video-1")
+        questions = next(
+            item
+            for item in matrix["audience_signal_groups"]
+            if item["kind"] == "question"
+        )
+        self.assertEqual(questions["video_count"], 2)
+        self.assertEqual(questions["comment_count"], 2)
 
     def test_public_report_is_an_action_card_not_a_research_report(self):
         report = {

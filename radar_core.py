@@ -238,15 +238,12 @@ def prefilter_keyword_pool(
 
 def build_search_terms(
     plan: dict[str, list[str]],
-    zh_pool: list[tuple[str, int, int]],
-    en_pool: list[tuple[str, int, int]],
-    zh_limit: int = 8,
-    en_limit: int = 6,
+    zh_related: Iterable[tuple[str, int]] | None = None,
+    en_related: Iterable[tuple[str, int]] | None = None,
+    zh_limit: int = 4,
+    en_limit: int = 2,
 ) -> dict[str, list[dict[str, str]]]:
-    """保留 AI 產生的不同意圖，再用 autocomplete 補足字面變化。
-
-    這一步完全是確定性的，避免為了從候選詞再挑一次而多呼叫模型。
-    """
+    """把 AI 的兩軸拆解與一次 autocomplete 組成固定預算的查詢。"""
 
     def add(
         selected: list[dict[str, str]], term: Any, intent: str, reason: str, limit: int
@@ -258,37 +255,82 @@ def build_search_terms(
             return
         selected.append({"kw": clean, "intent": intent, "reason": reason})
 
-    zh: list[dict[str, str]] = []
-    zh_seed_target = max(1, zh_limit - 2)
-    categories = [
-        ("core_terms", "核心詞"),
-        ("question_terms", "問句"),
-        ("problem_terms", "問題"),
-        ("adjacent_terms", "相鄰題材"),
-    ]
-    # 先讓每一類至少有機會出現，再補第二個核心／問句，避免整批都是長問句。
-    for offset in range(2):
-        for key, label in categories:
-            values = plan.get(key, [])
-            if offset < len(values):
-                add(zh, values[offset], label, "AI 產生的搜尋起點", zh_seed_target)
+    def clean_terms(key: str) -> list[str]:
+        return list(
+            dict.fromkeys(
+                str(value).strip() for value in plan.get(key, []) if str(value).strip()
+            )
+        )
 
-    for term, _score, _round in zh_pool:
-        add(zh, term, "延伸詞", "公開搜尋建議的字面延伸", zh_limit)
-    for key, label in categories:
-        for term in plan.get(key, [])[2:]:
-            add(zh, term, label, "AI 產生的搜尋起點", zh_limit)
-    for term, _score, _round in zh_pool:
-        add(zh, term, "延伸詞", "公開搜尋建議的字面延伸", zh_limit)
+    def build_market(
+        core_terms: list[str],
+        question_terms: list[str],
+        related_terms: Iterable[tuple[str, int]],
+        limit: int,
+        *,
+        english: bool = False,
+    ) -> list[dict[str, str]]:
+        selected: list[dict[str, str]] = []
+        if not core_terms or limit <= 0:
+            return selected
+        add(selected, core_terms[0], "核心字", "AI 拆解出的主要主題", limit)
+        for index, question in enumerate(question_terms):
+            core = core_terms[index % len(core_terms)]
+            combined = f"{question} {core}" if english else f"{core} {question}"
+            add(
+                selected,
+                combined,
+                "核心字 × 問題字",
+                "AI 拆解後的問題意圖組合",
+                limit,
+            )
+        for core in core_terms[1:]:
+            add(selected, core, "核心字", "AI 拆解出的相關主題", limit)
 
-    en: list[dict[str, str]] = []
-    en_seed_target = max(1, en_limit - 1)
-    for term in plan.get("en_terms", []):
-        add(en, term, "英文搜尋詞", "AI 產生的自然英文說法", en_seed_target)
-    for term, _score, _round in en_pool:
-        add(en, term, "英文延伸詞", "公開搜尋建議的字面延伸", en_limit)
-    for term in plan.get("en_terms", []):
-        add(en, term, "英文搜尋詞", "AI 產生的自然英文說法", en_limit)
+        related = sorted(
+            (
+                (str(term).strip(), int(score or 0))
+                for term, score in related_terms
+                if str(term).strip()
+            ),
+            key=lambda item: (-item[1], len(item[0])),
+        )
+        if not related or limit <= 1:
+            return selected
+
+        direct = selected
+        selected = direct[: max(1, limit - 1)]
+        for term, _score in related:
+            add(
+                selected,
+                term,
+                "YouTube 關聯字",
+                "由第一輪核心字與問題字取得的一次搜尋建議",
+                limit,
+            )
+        for item in direct:
+            add(
+                selected,
+                item["kw"],
+                item["intent"],
+                item["reason"],
+                limit,
+            )
+        return selected
+
+    zh = build_market(
+        clean_terms("core_terms"),
+        clean_terms("question_terms"),
+        zh_related or [],
+        zh_limit,
+    )
+    en = build_market(
+        clean_terms("en_core_terms"),
+        clean_terms("en_question_terms"),
+        en_related or [],
+        en_limit,
+        english=True,
+    )
 
     return {"zh": zh[:zh_limit], "en": en[:en_limit]}
 

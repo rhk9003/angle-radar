@@ -26,7 +26,6 @@ from radar_core import (
     parse_youtube_video_ids,
     pick_evidence_ready_videos,
     pick_videos_diverse,
-    prefilter_keyword_pool,
     stable_hash,
     validate_reflow_selection,
 )
@@ -39,6 +38,7 @@ from reporting import (
     angle_development_prompt,
     angle_report_prompt,
     breakdown_batch_prompt,
+    build_comparison_matrix,
     build_public_export,
     keyword_reflow_prompt,
     keyword_plan_prompt,
@@ -60,7 +60,9 @@ DEFAULT_PIPELINE_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_REPORT_MODEL = "gemini-3.5-flash"
 BREAKDOWN_PROMPT_VERSION = "angle-evidence-v5"
 BREAKDOWN_BATCH_SIZE = 4
-MAX_REFLOW_TERMS = 4
+MAX_REFLOW_TERMS = 2
+MAX_FIRST_ROUND_ZH = 4
+MAX_FIRST_ROUND_EN = 2
 MAX_DISCOVERY_VIDEOS = 10
 MAX_EVIDENCE_PROBES = 12
 MAX_RELEVANCE_VIDEOS = 180
@@ -381,37 +383,45 @@ def run_pipeline(
         if not plan.get("core_terms"):
             plan["core_terms"] = [topic]
         result["keyword_plan"] = plan
-        progress.update(
-            "正在整理公開資料…",
-            "已完成第一輪搜尋起點；第二輪只允許從實際資料候選中選取。",
-        )
 
-        zh_seeds = []
-        for field, limit in (
-            ("core_terms", 4),
-            ("question_terms", 4),
-            ("problem_terms", 3),
-            ("adjacent_terms", 3),
-        ):
-            zh_seeds.extend(plan.get(field, [])[:limit])
-        en_seeds = plan.get("en_terms", [])[:7]
-        zh_pool, zh_log = youtube.expand_keywords(zh_seeds, "zh", cfg["mine_rounds"])
-        en_pool, en_log = youtube.expand_keywords(en_seeds, "en", cfg["mine_rounds"])
-        zh_shortlist = prefilter_keyword_pool(zh_pool, 30)
-        en_shortlist = prefilter_keyword_pool(en_pool, 30)
+        zh_search_limit = min(int(cfg["n_zh"]), MAX_FIRST_ROUND_ZH)
+        en_search_limit = min(int(cfg["n_en"]), MAX_FIRST_ROUND_EN)
+        direct_terms = build_search_terms(
+            plan,
+            zh_limit=zh_search_limit,
+            en_limit=en_search_limit,
+        )
+        zh_related = youtube.autocomplete_batch(
+            [item["kw"] for item in direct_terms["zh"]],
+            "zh-TW",
+        )
+        en_related = youtube.autocomplete_batch(
+            [item["kw"] for item in direct_terms["en"]],
+            "en",
+        )
         selected = build_search_terms(
             plan,
-            zh_shortlist,
-            en_shortlist,
-            zh_limit=cfg["n_zh"],
-            en_limit=cfg["n_en"],
+            zh_related.items(),
+            en_related.items(),
+            zh_limit=zh_search_limit,
+            en_limit=en_search_limit,
         )
         if not selected["zh"]:
             selected["zh"] = [
                 {"kw": topic, "intent": "核心詞", "reason": "使用者輸入的主題"}
             ]
         result["selected_kws"] = selected
-        result["mining_log"] = {"zh": zh_log, "en": en_log}
+        result["related_keyword_stats"] = {
+            "autocomplete_rounds": 1,
+            "zh_seed_queries": len(direct_terms["zh"]),
+            "en_seed_queries": len(direct_terms["en"]),
+            "zh_candidates": len(zh_related),
+            "en_candidates": len(en_related),
+        }
+        progress.update(
+            "正在整理公開資料…",
+            "已把輸入拆成核心字與問題字；YouTube 關聯字只取一次，沒有多輪展開。",
+        )
 
         pool_by_id: dict[str, dict[str, Any]] = {}
         search_jobs = []
@@ -459,6 +469,9 @@ def run_pipeline(
         result["collection_stats"].update(
             {
                 "first_round_search_terms": len(search_jobs),
+                "max_search_terms_with_reflow": (
+                    MAX_FIRST_ROUND_ZH + MAX_FIRST_ROUND_EN + MAX_REFLOW_TERMS
+                ),
                 "first_round_unique_videos": len(all_videos),
                 "reference_video_ids_parsed": len(reference_ids),
             }
@@ -713,6 +726,21 @@ def run_pipeline(
         compact_comments = {
             packet["video_id"]: packet.get("comments", []) for packet in packets
         }
+        comparison_matrix = build_comparison_matrix(all_videos, compact_comments)
+        result["comparison_matrix"] = comparison_matrix
+        result["collection_stats"].update(
+            {
+                "title_landscape_videos": len(
+                    comparison_matrix.get("title_landscape", [])
+                ),
+                "comparison_keyword_groups": len(
+                    comparison_matrix.get("keyword_coverage", [])
+                ),
+                "comparison_audience_groups": len(
+                    comparison_matrix.get("audience_signal_groups", [])
+                ),
+            }
+        )
         raw_synthesis = gemini.generate_json(
             stage="跨來源比較歸納",
             model=cfg["pipeline_model"],
@@ -724,6 +752,7 @@ def run_pipeline(
                 all_videos,
                 compact_comments,
                 rising_signals,
+                comparison_matrix,
             ),
             # 這一階段的內容已由本地驗證器鎖定來源；不送
             # response_schema，避免 Gemini 對複合歸納請求回報通用 400。
@@ -842,9 +871,8 @@ with st.sidebar:
         )
         with st.expander("進階參數"):
             N_ANGLES = st.slider("切角上限", 4, 6, 6)
-            N_EN = st.slider("英文查詢數", 2, 8, 4)
-            N_ZH = st.slider("中文查詢數", 3, 10, 6)
-            MINE_ROUNDS = st.slider("探索廣度", 1, 3, 2)
+            N_EN = st.slider("英文查詢數", 1, MAX_FIRST_ROUND_EN, 2)
+            N_ZH = st.slider("中文查詢數", 2, MAX_FIRST_ROUND_ZH, 4)
             PER_KW = st.slider("每組候選數", 15, 40, 25)
             ANALYZE_N = st.slider("證據分析影片數", 5, 10, 8)
             WINDOW_DAYS = st.select_slider(
@@ -859,7 +887,7 @@ with st.sidebar:
     else:
         REPORT_MODEL = DEFAULT_REPORT_MODEL
         PIPELINE_MODEL = DEFAULT_PIPELINE_MODEL
-        N_ANGLES, N_EN, N_ZH, MINE_ROUNDS = 6, 4, 6, 2
+        N_ANGLES, N_EN, N_ZH = 6, 2, 4
         PER_KW, ANALYZE_N, WINDOW_DAYS, MIN_VIEWS = 25, 8, 180, 3_000
         VIDEO_TYPE = "全部"
 
@@ -931,7 +959,6 @@ if run_clicked:
                 "n_angles": N_ANGLES,
                 "n_zh": N_ZH,
                 "n_en": N_EN,
-                "mine_rounds": MINE_ROUNDS,
                 "per_kw": PER_KW,
                 "analyze_n": ANALYZE_N,
                 "window_days": WINDOW_DAYS,
@@ -1072,12 +1099,13 @@ if "radar_result" in st.session_state:
             st.json(result.get("keyword_plan", {}))
             st.json(result.get("selected_kws", {}))
             st.json({"資料回流詞": result.get("reflow_terms", [])})
-            st.json(result.get("mining_log", {}))
+            st.json({"一次關聯字": result.get("related_keyword_stats", {})})
             st.caption(f"YouTube 呼叫：{result.get('youtube_usage', {})}")
             if result.get("youtube_errors"):
                 st.json(result["youtube_errors"])
 
         with st.expander("三層比較與跨層歸納"):
+            st.json(result.get("comparison_matrix", {}))
             st.json(result.get("research_synthesis", {}))
 
         with st.expander("樣本與影片評分"):

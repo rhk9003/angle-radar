@@ -143,32 +143,49 @@ class KeywordTests(unittest.TestCase):
         )
         self.assertEqual({item["id"] for item in selected}, {"ready-1", "ready-2"})
 
-    def test_one_plan_keeps_short_terms_questions_and_problems(self):
+    def test_one_plan_combines_core_question_and_one_round_related_terms(self):
         plan = {
             "core_terms": ["算命", "算命創業"],
-            "question_terms": ["如何成為命理師", "命理師怎麼收費"],
-            "problem_terms": ["命理師沒有客戶", "命理師接案風險"],
-            "adjacent_terms": ["命理個人品牌"],
-            "en_terms": ["start astrology business", "get first tarot clients"],
+            "question_terms": ["如何開始", "怎麼收費", "沒客戶怎麼辦"],
+            "en_core_terms": ["astrology business", "tarot business"],
+            "en_question_terms": ["how to start", "get first clients"],
         }
         selected = build_search_terms(
             plan,
-            [("算命師如何開始接案", 90, 1), ("命理創業收入", 80, 1)],
-            [("spiritual business mistakes", 90, 1)],
-            zh_limit=7,
+            [("算命師如何開始接案", 90), ("命理創業收入", 80)],
+            [("spiritual business mistakes", 90)],
+            zh_limit=4,
             en_limit=3,
         )
         zh_terms = [item["kw"] for item in selected["zh"]]
         self.assertIn("算命", zh_terms)
-        self.assertIn("如何成為命理師", zh_terms)
-        self.assertIn("命理師沒有客戶", zh_terms)
-        self.assertIn("命理個人品牌", zh_terms)
+        self.assertIn("算命 如何開始", zh_terms)
+        self.assertIn("算命創業 怎麼收費", zh_terms)
         self.assertIn("算命師如何開始接案", zh_terms)
-        self.assertLessEqual(len(zh_terms), 7)
+        self.assertEqual(len(zh_terms), 4)
         self.assertIn(
             "spiritual business mistakes", [item["kw"] for item in selected["en"]]
         )
         self.assertEqual(len(selected["en"]), 3)
+
+    def test_default_search_budget_is_four_zh_and_two_en(self):
+        selected = build_search_terms(
+            {
+                "core_terms": ["廣告代操", "數位行銷"],
+                "question_terms": ["如何選", "怎麼買", "踩雷怎麼辦", "值得嗎"],
+                "en_core_terms": ["digital marketing agency"],
+                "en_question_terms": ["how to choose", "common mistakes"],
+            }
+        )
+        self.assertEqual(len(selected["zh"]), 4)
+        self.assertEqual(len(selected["en"]), 2)
+        self.assertTrue(
+            all(
+                item["intent"] in {"核心字", "核心字 × 問題字"}
+                for market in selected.values()
+                for item in market
+            )
+        )
 
 
 class ScoringTests(unittest.TestCase):
