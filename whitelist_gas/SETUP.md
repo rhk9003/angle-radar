@@ -57,10 +57,27 @@ WHITELIST_API_KEY = "與 Code.gs 內 API_KEY 一模一樣的密鑰"
 
 此分頁可用來統計有多少報告至少提供一個想深入的切角，不會影響剩餘次數。
 
+使用者每次開始分析後，程式也會自動建立 `usage_logs` 分頁。成功與失敗都會留下一筆，欄位為：
+
+| 欄位 | 內容 |
+|---|---|
+| `timestamp` | Apps Script 寫入紀錄的時間 |
+| `request_id` | 單次分析的唯一識別碼 |
+| `started_at` / `completed_at` / `duration_seconds` | 開始、完成時間與耗時 |
+| `code` / `name` | 白名單使用者 |
+| `status` | `success` 或 `failed` |
+| `quota_consumed` / `quota_refunded` | 是否扣除、退回試用次數 |
+| `input_mode` / `input` / `exclusions` | 使用者的輸入模式、原始輸入與排除條件 |
+| `output` | 成功時實際顯示的切角報告 |
+| `error` | 失敗時的錯誤內容 |
+
+Google Sheets 單一儲存格最多約 5 萬字元，因此 `output` 最多保留前 49,000 字元。一般報告不會碰到此上限。
+
 ## 運作邏輯
 
 - 登入：`check`（不扣）→ 顯示剩餘
 - 出報告：`consume`（原子扣 1；remaining>0 才扣得動，用 LockService 防並發重扣）
 - 跑失敗：`refund`（加 1 退還）
 - 切角回饋：`feedback`（寫入 `feedback` 分頁，不扣次數）
+- 使用紀錄：`log_usage`（寫入 `usage_logs` 分頁，不扣次數；管理者分析也會記錄）
 - 加值：你直接在 Sheet 把 `remaining` 數字改大即可，即時生效

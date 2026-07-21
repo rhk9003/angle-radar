@@ -62,7 +62,7 @@ API 金鑰只應放在 Streamlit Secrets，不能提交進 GitHub。公開部署
 
 舊表中的 `deep_mode` 欄位可以保留，但新版一般模式不會使用它。
 
-設定方式見 [whitelist_gas/SETUP.md](whitelist_gas/SETUP.md)。切角價值回饋會寫入同一份試算表的 `feedback` 分頁。
+設定方式見 [whitelist_gas/SETUP.md](whitelist_gas/SETUP.md)。每次白名單分析的輸入、輸出、時間與成功/失敗狀態會寫入 `usage_logs` 分頁；切角價值回饋會寫入 `feedback` 分頁。
 
 ## 成本
 

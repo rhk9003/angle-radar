@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import time
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 import pandas as pd
 import requests
@@ -118,6 +120,52 @@ def _wl_api(
         return response.json()
     except Exception:
         return {"ok": False, "error": "api_error"}
+
+
+def _log_whitelist_usage(
+    *,
+    code: str,
+    request_id: str,
+    started_at: datetime,
+    elapsed_seconds: float,
+    status: str,
+    input_mode: str,
+    input_text: str,
+    exclusions: str,
+    output: str = "",
+    error: str = "",
+    quota_consumed: bool = False,
+    quota_refunded: bool = False,
+) -> bool:
+    """Best-effort audit log for signed-in whitelist usage."""
+    if not _wl_enabled() or not code:
+        return True
+    response = _wl_api(
+        "log_usage",
+        code,
+        {
+            "request_id": request_id,
+            "started_at": started_at.isoformat(timespec="seconds"),
+            "completed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "duration_seconds": f"{elapsed_seconds:.1f}",
+            "status": status,
+            "quota_consumed": str(quota_consumed).lower(),
+            "quota_refunded": str(quota_refunded).lower(),
+            "input_mode": input_mode,
+            "input": input_text,
+            "exclusions": exclusions,
+            "output": output,
+            "error": error,
+        },
+    )
+    if not response.get("ok"):
+        LOGGER.warning(
+            "Could not save whitelist usage log for request %s: %s",
+            request_id,
+            response.get("error", "unknown_error"),
+        )
+        return False
+    return True
 
 
 _WL_ERR = {
@@ -957,6 +1005,9 @@ if run_clicked:
             else:
                 st.error(_WL_ERR.get(response.get("error", ""), "額度不足或服務異常"))
         if may_run:
+            usage_request_id = str(uuid4())
+            usage_started_at = datetime.now().astimezone()
+            usage_started_clock = time.monotonic()
             config = {
                 "gemini_key": GEMINI_API_KEY,
                 "yt_key": YOUTUBE_API_KEY,
@@ -977,20 +1028,47 @@ if run_clicked:
                     config, topic.strip(), exclusions.strip(), references.strip()
                 )
                 st.session_state["radar_result"] = pipeline_result
+                _log_whitelist_usage(
+                    code=code,
+                    request_id=usage_request_id,
+                    started_at=usage_started_at,
+                    elapsed_seconds=time.monotonic() - usage_started_clock,
+                    status="success",
+                    input_mode=input_mode,
+                    input_text=topic.strip(),
+                    exclusions=exclusions.strip(),
+                    output=pipeline_result.get("report", ""),
+                    quota_consumed=consumed,
+                )
             except Exception as exc:
                 if _is_admin():
                     st.error(str(exc))
                 else:
                     st.error("這次分析沒有完成，請稍後再試。")
+                refunded = False
                 if consumed:
                     refund = _wl_api("refund", code)
                     if refund.get("ok"):
+                        refunded = True
                         st.session_state["_wl_remaining"] = int(
                             refund.get("remaining", 0) or 0
                         )
                         st.info("這次沒有完成，已退還使用次數。")
                     else:
                         st.warning("使用次數暫時無法自動退回，請聯絡站主處理。")
+                _log_whitelist_usage(
+                    code=code,
+                    request_id=usage_request_id,
+                    started_at=usage_started_at,
+                    elapsed_seconds=time.monotonic() - usage_started_clock,
+                    status="failed",
+                    input_mode=input_mode,
+                    input_text=topic.strip(),
+                    exclusions=exclusions.strip(),
+                    error=str(exc),
+                    quota_consumed=consumed,
+                    quota_refunded=refunded,
+                )
 
 
 if "radar_result" in st.session_state:
