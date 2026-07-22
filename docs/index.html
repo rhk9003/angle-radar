@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>切角雷達 Angle Radar｜替影音創作者做選題研究</title>
+<meta name="description" content="把「想拍什麼」丟給切角雷達，它替你看熱門影片、讀字幕、爬留言，用看一支影片的時間讀完海內外影片，回來給你 4–6 個能直接開拍的切角。">
+<meta property="og:title" content="切角雷達 Angle Radar">
+<meta property="og:description" content="用看一支影片的時間，幫你讀完海內外影片。選題的事，交給我。">
+<meta property="og:type" content="website">
+<style>
+/* ============================================================
+   切角雷達 — 編輯刊物版式（同 D&J Ads 設計語彙）
+   紙白＋深藍墨＋紅點綴；黑體軟排版；色塊節奏、少字大留白
+   ============================================================ */
+:root{
+  --ink:#1a1a2e; --body:#3a3a46;
+  --slate:#6b6f7d; --mute:#9a9ca6;
+  --line:#d3d6df; --line-soft:#e7e9ef;
+  --paper:#ffffff; --paper-2:#f6f6f9;
+  --navy:#1a1a2e;
+  --accent:#e94560; --accent-deep:#d63851;
+  --accent-soft:rgba(233,69,96,.05);
+  --sans:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Microsoft JhengHei","Segoe UI",sans-serif;
+
+  --maxw:1140px; --maxw-narrow:760px;
+  --gutter:clamp(22px,5vw,80px);
+  --sec-y:clamp(64px,9vw,128px);
+
+  --fs-eyebrow:clamp(.7rem,.86vw,.8rem);
+  --fs-num:clamp(2.4rem,4.4vw,3.5rem);
+  --fs-h2:clamp(1.6rem,3.2vw,2.5rem);
+  --fs-h3:clamp(1.14rem,1.7vw,1.4rem);
+  --fs-lead:clamp(1.05rem,1.5vw,1.24rem);
+  --fs-quote:clamp(1.24rem,2.2vw,1.8rem);
+  --fs-body:clamp(1rem,1.12vw,1.07rem);
+  --fs-small:clamp(.85rem,.95vw,.92rem);
+
+  --lh-tight:1.4; --lh-body:1.9;
+  --radius:2px; --dur:.4s; --ease:cubic-bezier(.22,.61,.36,1);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:var(--paper);color:var(--body);
+  font-family:var(--sans);font-weight:400;
+  font-size:var(--fs-body);line-height:var(--lh-body);
+  word-break:keep-all;overflow-wrap:anywhere;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+a{color:inherit;text-decoration:none}
+h1,h2,h3{word-break:keep-all;text-wrap:balance;font-weight:600;color:var(--ink)}
+strong{font-weight:600;color:var(--ink)}
+.nowrap{white-space:nowrap}
+.wrap{max-width:var(--maxw);margin-inline:auto;padding-inline:var(--gutter)}
+.sec{padding-block:var(--sec-y);position:relative;scroll-margin-top:84px}
+.sec--p2{background:var(--paper-2)}
+.sec + .sec{border-top:1px solid var(--line)}
+
+/* eyebrow：英文小標＋前綴細線 */
+.eyebrow{
+  font-size:var(--fs-eyebrow);font-weight:600;letter-spacing:.3em;
+  text-transform:uppercase;color:var(--slate);
+  display:inline-flex;align-items:center;gap:14px;
+}
+.eyebrow::before{content:"";width:30px;height:1px;background:var(--line)}
+.eyebrow--accent{color:var(--accent)}
+.eyebrow--accent::before{background:var(--accent)}
+
+/* 幽靈大編號 */
+.num{
+  font-size:var(--fs-num);font-weight:300;color:var(--line);
+  line-height:1;letter-spacing:.04em;display:block;
+  margin-block:clamp(12px,1.6vw,18px) clamp(8px,1vw,14px);
+  font-variant-numeric:lining-nums;
+}
+
+/* 置中標頭群 */
+.head{text-align:center;max-width:var(--maxw-narrow);margin-inline:auto}
+.head h2{
+  font-size:var(--fs-h2);line-height:var(--lh-tight);letter-spacing:.015em;
+  margin-top:clamp(12px,1.6vw,20px);
+}
+
+/* 按鈕與連結 */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;
+  font-family:inherit;font-size:1rem;font-weight:500;letter-spacing:.05em;
+  padding:15px 32px;border-radius:var(--radius);cursor:pointer;white-space:nowrap;
+  border:1px solid transparent;
+  transition:background var(--dur) var(--ease),color var(--dur) var(--ease),
+             border-color var(--dur) var(--ease),transform var(--dur) var(--ease);
+}
+.btn--accent{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn--accent:hover{background:var(--accent-deep);border-color:var(--accent-deep);transform:translateY(-1px)}
+.btn:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.qlink{
+  position:relative;font-size:var(--fs-small);color:var(--slate);
+  letter-spacing:.02em;padding-bottom:3px;white-space:nowrap;
+  transition:color var(--dur) var(--ease);
+}
+.qlink::after{
+  content:"";position:absolute;left:0;bottom:0;width:100%;height:1px;
+  background:var(--accent);transform:scaleX(0);transform-origin:left;
+  transition:transform var(--dur) var(--ease);
+}
+.qlink:hover{color:var(--ink)}
+.qlink:hover::after{transform:scaleX(1)}
+
+/* 紅底線點綴（極少量） */
+.acc{
+  -webkit-box-decoration-break:clone;box-decoration-break:clone;
+  background-image:linear-gradient(transparent 78%, rgba(233,69,96,.26) 78%);
+}
+
+/* ============ NAV ============ */
+.nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  background:rgba(255,255,255,.96);
+  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line-soft);
+}
+.nav__in{
+  max-width:var(--maxw);margin-inline:auto;padding-inline:var(--gutter);
+  height:64px;display:flex;align-items:center;justify-content:space-between;gap:20px;
+}
+.brand{display:flex;align-items:baseline;gap:11px}
+.brand__zh{font-size:1.12rem;font-weight:600;color:var(--ink);letter-spacing:.02em;white-space:nowrap}
+.brand__en{font-size:.6rem;font-weight:500;letter-spacing:.26em;color:var(--mute);text-transform:uppercase}
+.nav__right{display:flex;align-items:center;gap:clamp(16px,2vw,28px)}
+.nav__menu{display:flex;align-items:center;gap:clamp(16px,2vw,30px);list-style:none}
+.nav__link{
+  font-size:.95rem;color:var(--slate);letter-spacing:.02em;
+  position:relative;padding-bottom:4px;transition:color var(--dur) var(--ease);
+}
+.nav__link::after{
+  content:"";position:absolute;left:0;bottom:0;width:100%;height:1px;
+  background:var(--ink);transform:scaleX(0);transform-origin:left;
+  transition:transform var(--dur) var(--ease);
+}
+.nav__link:hover{color:var(--ink)}
+.nav__link:hover::after{transform:scaleX(1)}
+.nav__cta{padding:9px 20px;font-size:.9rem}
+
+/* ============ HERO ============ */
+.hero{
+  position:relative;overflow:hidden;background:var(--paper);
+  padding:calc(64px + clamp(44px,7vw,88px)) 0 clamp(44px,6vw,72px);
+}
+.hero__glyph{
+  position:absolute;z-index:0;pointer-events:none;user-select:none;
+  font-weight:300;line-height:1;color:var(--line);opacity:.5;
+  font-size:clamp(16rem,40vw,46rem);top:50%;right:-4%;transform:translateY(-48%);
+}
+.hero__in{position:relative;z-index:1}
+.hero h1{
+  font-size:clamp(2.1rem,6vw,3.9rem);line-height:1.28;letter-spacing:.01em;
+  margin-top:clamp(16px,2.2vw,26px);font-weight:600;
+}
+.hero h1 em{font-style:normal;color:var(--accent)}
+.hero__lead{
+  margin-top:clamp(20px,2.6vw,30px);font-size:var(--fs-lead);
+  color:var(--slate);line-height:1.8;max-width:38ch;
+}
+.hero__cta{
+  display:flex;gap:clamp(18px,2.4vw,28px);align-items:center;flex-wrap:wrap;
+  margin-top:clamp(26px,3vw,38px);
+}
+.hero__stats{
+  display:grid;grid-template-columns:repeat(3,1fr);max-width:680px;
+  margin-top:clamp(44px,6vw,76px);border-top:1px solid var(--line);
+}
+.hero__stats > div{padding:22px 22px 6px 0;min-width:0}
+.hero__stats > div + div{border-left:1px solid var(--line);padding-left:clamp(20px,3vw,32px)}
+.hero__stat b{
+  display:block;font-size:clamp(1.9rem,3.2vw,2.7rem);font-weight:500;
+  color:var(--ink);letter-spacing:.01em;font-variant-numeric:lining-nums;
+}
+.hero__stat:first-child b{color:var(--accent)}
+.hero__stat span{display:block;font-size:var(--fs-small);color:var(--slate);margin-top:6px}
+
+/* ============ 功課（深藍色塊板） ============ */
+.board{
+  max-width:var(--maxw-narrow);margin:clamp(34px,5vw,54px) auto 0;
+  background:var(--navy);border-radius:var(--radius);
+  padding:clamp(28px,4vw,52px) clamp(24px,4vw,52px);color:#fff;
+}
+.chore{
+  display:grid;grid-template-columns:auto 1fr auto;gap:clamp(14px,2vw,26px);
+  align-items:baseline;padding:clamp(18px,2.4vw,26px) 0;
+}
+.chore + .chore{border-top:1px solid rgba(255,255,255,.14)}
+.chore__n{
+  font-size:1rem;color:#ff8598;font-weight:600;letter-spacing:.05em;
+  font-variant-numeric:lining-nums;
+}
+.chore__t{
+  font-size:var(--fs-h3);color:rgba(255,255,255,.72);line-height:1.6;min-width:0;
+  text-decoration:line-through;text-decoration-thickness:1.5px;
+  text-decoration-color:rgba(255,255,255,.45);
+}
+.chore__me{
+  font-size:.8rem;font-weight:600;letter-spacing:.14em;color:#fff;
+  background:var(--accent);border-radius:999px;padding:4px 13px;white-space:nowrap;
+}
+.punch{
+  text-align:center;margin-top:clamp(28px,3.4vw,44px);
+  font-size:var(--fs-quote);color:var(--ink);line-height:var(--lh-tight);font-weight:600;
+}
+
+/* ============ 分工（對位兩欄） ============ */
+.duty{
+  display:grid;grid-template-columns:1fr 1fr;max-width:920px;
+  margin:clamp(34px,5vw,54px) auto 0;border-block:1px solid var(--line);
+}
+.duty__col{padding:clamp(28px,3.2vw,44px) clamp(22px,3vw,40px);min-width:0}
+.duty__col--you{background:var(--paper-2);border-right:1px solid var(--line)}
+.duty__col--me{background:var(--accent-soft)}
+.duty__label{
+  font-size:var(--fs-eyebrow);letter-spacing:.2em;text-transform:uppercase;
+  color:var(--mute);margin-bottom:14px;font-weight:600;
+}
+.duty__col--me .duty__label{color:var(--accent)}
+.duty__col h3{font-size:var(--fs-h3);line-height:1.5;margin-bottom:10px}
+.duty__col p{color:var(--body)}
+.duty__col ul{list-style:none}
+.duty__col li{
+  position:relative;padding:11px 0 11px 26px;color:var(--body);
+  border-bottom:1px solid var(--line-soft);line-height:1.7;
+}
+.duty__col li:last-child{border-bottom:0}
+.duty__col li::before{content:"—";position:absolute;left:0;top:11px;color:var(--accent)}
+.duty__col li b{font-weight:600;color:var(--ink);font-variant-numeric:lining-nums}
+
+/* ============ 成果大框 ============ */
+.gets{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:18px;
+  max-width:1000px;margin:clamp(34px,5vw,54px) auto 0;
+}
+.get{
+  background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:inset 0 3px 0 0 var(--navy);min-width:0;
+  padding:clamp(28px,3.2vw,42px) clamp(22px,2.6vw,34px) clamp(30px,3.4vw,46px);
+}
+.get__n{
+  font-size:1rem;color:var(--accent);font-weight:600;letter-spacing:.05em;
+  font-variant-numeric:lining-nums;
+}
+.get h3{
+  font-size:clamp(1.3rem,2.1vw,1.6rem);line-height:1.45;
+  margin-top:clamp(12px,1.6vw,18px);
+}
+.get p{margin-top:10px;font-size:var(--fs-small);color:var(--slate);line-height:1.8}
+
+/* ============ 定價（紅染色塊板） ============ */
+.plan{
+  max-width:640px;margin:clamp(34px,5vw,54px) auto 0;
+  background:var(--accent-soft);border-radius:var(--radius);
+  box-shadow:inset 0 3px 0 0 var(--accent);
+  padding:clamp(28px,4vw,48px) clamp(24px,4vw,48px);
+}
+.plan__price{
+  font-size:clamp(2.2rem,4vw,3rem);font-weight:500;color:var(--ink);
+  letter-spacing:.01em;font-variant-numeric:lining-nums;
+}
+.plan__price span{font-size:.4em;font-weight:400;color:var(--slate)}
+.plan__note{margin-top:8px;font-size:var(--fs-small);color:var(--accent);font-weight:600}
+.plan ul{list-style:none;margin-top:clamp(20px,2.6vw,30px)}
+.plan li{
+  position:relative;padding:12px 0 12px 26px;color:var(--body);
+  border-bottom:1px solid rgba(233,69,96,.12);line-height:1.7;
+}
+.plan li::before{content:"—";position:absolute;left:0;top:12px;color:var(--accent)}
+.plan li:last-child{border-bottom:0}
+.plan__cta{margin-top:clamp(22px,2.6vw,30px);display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.plan__hint{font-size:var(--fs-small);color:var(--mute)}
+.plan-foot{
+  max-width:640px;margin:14px auto 0;text-align:center;
+  font-size:var(--fs-small);color:var(--mute);
+}
+
+/* ============ FAQ ============ */
+.faq{
+  max-width:var(--maxw-narrow);margin:clamp(34px,5vw,52px) auto 0;
+  border-top:1px solid var(--line);
+}
+.faq details{border-bottom:1px solid var(--line-soft)}
+.faq summary{
+  list-style:none;cursor:pointer;position:relative;
+  padding:clamp(18px,2.2vw,26px) 40px clamp(18px,2.2vw,26px) 0;
+  font-size:var(--fs-h3);color:var(--ink);line-height:1.6;font-weight:600;
+}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{
+  content:"+";position:absolute;right:0;top:clamp(18px,2.2vw,26px);
+  font-size:1.5rem;font-weight:300;color:var(--accent);
+  transition:transform var(--dur) var(--ease);
+}
+.faq details[open] summary::after{transform:rotate(45deg)}
+.faq__a{padding:0 0 clamp(20px,2.4vw,28px);color:var(--body);max-width:60ch}
+.faq__a b{color:var(--ink);font-weight:600}
+
+/* ============ 結尾 CTA ============ */
+.cta{
+  background:var(--navy);color:#fff;position:relative;overflow:hidden;
+  padding:clamp(72px,10vw,128px) 0;
+}
+.cta__glyph{
+  position:absolute;z-index:0;pointer-events:none;user-select:none;
+  font-weight:300;line-height:1;color:#fff;opacity:.05;
+  font-size:clamp(14rem,36vw,40rem);bottom:-22%;right:-4%;
+}
+.cta__in{position:relative;z-index:1}
+.cta .eyebrow{color:#fff}
+.cta .eyebrow::before{background:var(--accent)}
+.cta h2{
+  font-size:clamp(1.9rem,4.6vw,3.2rem);color:#fff;line-height:1.35;
+  letter-spacing:.01em;margin-top:clamp(14px,1.8vw,22px);max-width:22ch;font-weight:600;
+}
+.cta h2 .acc{background-image:linear-gradient(transparent 76%, rgba(233,69,96,.5) 76%)}
+.cta p{
+  margin-top:clamp(16px,2vw,24px);font-size:var(--fs-lead);
+  color:rgba(255,255,255,.82);max-width:40ch;
+}
+.cta__act{margin-top:clamp(28px,3.4vw,40px);display:flex;align-items:center;gap:26px;flex-wrap:wrap}
+.cta__sign{
+  margin-top:clamp(30px,4vw,48px);padding-top:clamp(20px,2.4vw,28px);
+  border-top:1px solid rgba(255,255,255,.18);
+  font-size:var(--fs-small);letter-spacing:.08em;color:rgba(255,255,255,.6);
+}
+.cta__sign b{color:#fff;font-weight:600}
+
+/* ============ FOOTER ============ */
+.foot{background:#13131f}
+.foot__in{
+  max-width:var(--maxw);margin-inline:auto;
+  padding:clamp(30px,4vw,46px) var(--gutter);
+  display:flex;justify-content:space-between;align-items:center;gap:18px;flex-wrap:wrap;
+}
+.foot__brand{display:flex;align-items:baseline;gap:10px}
+.foot__brand b{font-size:1.02rem;color:#fff;font-weight:600}
+.foot__brand em{
+  font-style:normal;font-size:.58rem;letter-spacing:.24em;
+  color:rgba(255,255,255,.4);text-transform:uppercase;
+}
+.foot p{font-size:var(--fs-small);color:rgba(255,255,255,.42)}
+
+/* ============ RWD ============ */
+@media (max-width:860px){
+  .nav__menu{display:none}
+  .duty{grid-template-columns:1fr}
+  .duty__col--you{border-right:0;border-bottom:1px solid var(--line)}
+  .gets{grid-template-columns:1fr;max-width:520px}
+}
+@media (max-width:520px){
+  :root{--gutter:20px;--sec-y:clamp(52px,12vw,80px)}
+  .brand__en{display:none}
+  .hero__glyph{font-size:22rem;right:-18%;opacity:.35}
+  .hero__cta .btn{width:100%}
+  .hero__stats{grid-template-columns:1fr;max-width:none}
+  .hero__stats > div{padding:16px 0 4px}
+  .hero__stats > div + div{border-left:0;border-top:1px solid var(--line);padding-left:0}
+  .board{padding:22px 20px}
+  .chore{grid-template-columns:auto 1fr}
+  .chore__me{grid-column:2;justify-self:start}
+}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  .btn,.qlink::after,.nav__link::after,.faq summary::after{transition:none}
+}
+</style>
+</head>
+<body>
+
+<!-- ============ NAV ============ -->
+<nav class="nav">
+  <div class="nav__in">
+    <a class="brand" href="#top">
+      <span class="brand__zh">切角雷達</span>
+      <span class="brand__en">Angle Radar</span>
+    </a>
+    <div class="nav__right">
+      <ul class="nav__menu">
+        <li><a class="nav__link" href="#sample">你會拿到什麼</a></li>
+        <li><a class="nav__link" href="#pricing">收費方式</a></li>
+        <li><a class="nav__link" href="#faq">常見問題</a></li>
+      </ul>
+      <a class="btn btn--accent nav__cta" href="#cta">索取試用碼</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ============ HERO ============ -->
+<header class="hero" id="top">
+  <div class="hero__glyph" aria-hidden="true">∠</div>
+  <div class="wrap hero__in">
+    <p class="eyebrow eyebrow--accent">Topic Research, Done for You</p>
+    <h1>用<em>看一支影片的時間</em>，<br>幫你讀完海內外影片</h1>
+    <p class="hero__lead">想題目想到懷疑人生？我懂。<br>丟一句「想拍什麼」給我，剩下的我來。</p>
+    <div class="hero__cta">
+      <!-- TODO: 把 #cta 區的按鈕連結換成試用碼申請表單／LINE／IG -->
+      <a class="btn btn--accent" href="#cta">索取試用碼，先免費體驗</a>
+      <a class="qlink" href="#sample">先看你會拿到什麼</a>
+    </div>
+    <div class="hero__stats">
+      <div class="hero__stat"><b>60 支</b><span>海內外影片一起掃</span></div>
+      <div class="hero__stat"><b>8 支</b><span>字幕從頭讀到尾</span></div>
+      <div class="hero__stat"><b>4–6 張</b><span>能直接開拍的切角卡</span></div>
+    </div>
+  </div>
+</header>
+
+<!-- ============ 01 功課 ============ -->
+<section class="sec sec--p2">
+  <div class="wrap">
+    <div class="head">
+      <span class="eyebrow">Your Weekly Grind</span>
+      <span class="num">01</span>
+      <h2>選題，是每週躲不掉的功課</h2>
+    </div>
+    <div class="board">
+      <div class="chore">
+        <span class="chore__n">01</span>
+        <span class="chore__t">連看 30 支同類型影片</span>
+        <span class="chore__me">我來</span>
+      </div>
+      <div class="chore">
+        <span class="chore__n">02</span>
+        <span class="chore__t">熬夜翻海外影片找缺口</span>
+        <span class="chore__me">我來</span>
+      </div>
+      <div class="chore">
+        <span class="chore__n">03</span>
+        <span class="chore__t">整理歸納，賭一個題目</span>
+        <span class="chore__me">我來</span>
+      </div>
+    </div>
+    <p class="punch">這些，以後<span class="acc">都不用是你的</span>。</p>
+  </div>
+</section>
+
+<!-- ============ 02 分工 ============ -->
+<section class="sec">
+  <div class="wrap">
+    <div class="head">
+      <span class="eyebrow">How It Works</span>
+      <span class="num">02</span>
+      <h2>你只做一件事，剩下都算我的</h2>
+    </div>
+    <div class="duty">
+      <div class="duty__col duty__col--you">
+        <p class="duty__label">你做的</p>
+        <h3>丟一句「想拍什麼」</h3>
+        <p>例如：美妝品評比、創業課程、<br>運動鞋穿搭。</p>
+      </div>
+      <div class="duty__col duty__col--me">
+        <p class="duty__label">我做的</p>
+        <ul>
+          <li>掃 <b>60 支</b>海內外影片標題</li>
+          <li>讀完 <b>8 支</b>影片的字幕</li>
+          <li>爬<b>幾百則</b>觀眾留言</li>
+          <li>整理成 <b>4–6 張</b>切角卡</li>
+        </ul>
+      </div>
+    </div>
+    <p class="punch">整趟，大概是你<span class="nowrap">看一支影片的時間。</span></p>
+  </div>
+</section>
+
+<!-- ============ 03 成品 ============ -->
+<section class="sec sec--p2" id="sample">
+  <div class="wrap">
+    <div class="head">
+      <span class="eyebrow">What You Get</span>
+      <span class="num">03</span>
+      <h2>一次分析，你能達到</h2>
+    </div>
+
+    <div class="gets">
+      <div class="get">
+        <span class="get__n">01</span>
+        <h3>拿了就能開拍</h3>
+        <p>4–6 個切角，含核心訊息、可照念的開場</p>
+      </div>
+      <div class="get">
+        <span class="get__n">02</span>
+        <h3>研究的夜晚省下來</h3>
+        <p>海內外影片我看完，值得看的列成清單給你</p>
+      </div>
+      <div class="get">
+        <span class="get__n">03</span>
+        <h3>接上你慣用的 AI</h3>
+        <p>每個切角附深化 Prompt，直接發展成腳本</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 04 定價 ============ -->
+<section class="sec" id="pricing">
+  <div class="wrap">
+    <div class="head">
+      <span class="eyebrow">Plans &amp; Pricing</span>
+      <span class="num">04</span>
+      <h2>一個月 300，把選題的夜晚拿回來</h2>
+    </div>
+    <div class="plan">
+      <p class="plan__price">NT$300<span>／月</span></p>
+      <p class="plan__note">含每月 20 次完整分析</p>
+      <ul>
+        <li>4–6 張切角卡，寫到能直接開拍</li>
+        <li>值得研究的海內外影片清單</li>
+        <li>每張卡的深化 Prompt</li>
+      </ul>
+      <div class="plan__cta">
+        <a class="btn btn--accent" href="#cta">先拿試用碼，免費體驗</a>
+        <span class="plan__hint">邀請制內測，先試再說。</span>
+      </div>
+    </div>
+    <p class="plan-foot">※ 當月額度未用完，不累積至次月</p>
+  </div>
+</section>
+
+<!-- ============ FAQ ============ -->
+<section class="sec sec--p2" id="faq">
+  <div class="wrap">
+    <div class="head">
+      <span class="eyebrow">Good Questions</span>
+      <h2>常見問題</h2>
+    </div>
+    <div class="faq">
+      <details>
+        <summary>這跟我自己問 ChatGPT 差在哪？</summary>
+        <div class="faq__a">ChatGPT 用印象回答；我<b>真的替你跑一趟</b>，每張卡都留著我看過哪幾支影片。它動嘴，我動手。</div>
+      </details>
+      <details>
+        <summary>我是哪種創作者，適合嗎？</summary>
+        <div class="faq__a">內容有明確主題就適用。<b>知識型、技能型、利基題材</b>幫得上最多忙。</div>
+      </details>
+      <details>
+        <summary>找國外影片給我參考，是要我搬運嗎？</summary>
+        <div class="faq__a">不是。我找的是中文圈還沒做好的缺口，每張卡都有「拉開差異」和「不要拍成」——<b>做更好的版本，不是複製</b>。</div>
+      </details>
+      <details>
+        <summary>一次分析要等多久？</summary>
+        <div class="faq__a">幾分鐘，泡杯咖啡的時間。</div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 結尾 CTA ============ -->
+<section class="cta" id="cta">
+  <div class="cta__glyph" aria-hidden="true">∠</div>
+  <div class="wrap cta__in">
+    <span class="eyebrow">Let&#8217;s Start</span>
+    <h2>選題的事，<span class="acc">交給我</span>。<br>你去拍片。</h2>
+    <p>邀請制內測中，先免費體驗一次。</p>
+    <div class="cta__act">
+      <!-- TODO: 換成試用碼申請表單／LINE／IG 私訊連結 -->
+      <a class="btn btn--accent" href="#" style="font-size:1.05rem;padding:16px 40px;">索取試用碼</a>
+    </div>
+    <p class="cta__sign">— <b>切角雷達 Angle Radar</b>｜替影音創作者做選題研究</p>
+  </div>
+</section>
+
+<!-- ============ FOOTER ============ -->
+<footer class="foot">
+  <div class="foot__in">
+    <span class="foot__brand"><b>切角雷達</b><em>Angle Radar</em></span>
+    <p>邀請制內測中・試用碼由站主發放</p>
+  </div>
+</footer>
+
+</body>
+</html>
