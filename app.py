@@ -922,7 +922,7 @@ def run_pipeline(
 
 
 st.title("切角雷達")
-st.caption("從一個構想，或一支你看到的內容開始，找到可以拍什麼、怎麼拍與差異化。")
+st.caption("給一個類別或想拍的方向，剩下的搜尋、比較與切角交給切角雷達。")
 
 has_secret_keys = bool(_secret("GEMINI_API_KEY") and _secret("YOUTUBE_API_KEY"))
 with st.sidebar:
@@ -986,32 +986,15 @@ with st.sidebar:
         VIDEO_TYPE = "全部"
 
 
-input_mode = st.radio(
-    "研究起點",
-    ["idea", "source"],
-    format_func=lambda value: (
-        "我有一個構想" if value == "idea" else "我有影片標題或連結"
-    ),
-    horizontal=True,
-    key="input_mode",
+input_mode = "idea"
+topic = st.text_area(
+    "你想拍什麼？",
+    placeholder="例如：美妝品評比、創業課程、運動鞋穿搭",
+    height=112,
+    key="topic_input",
 )
-if input_mode == "idea":
-    topic = st.text_area(
-        "你想拍什麼？",
-        placeholder="例：想成為命理師，或把命理發展成工作",
-        height=96,
-        key="topic_input",
-    )
-    references = ""
-else:
-    topic = st.text_area(
-        "貼上影片標題或 YouTube 連結",
-        placeholder="例：命理師第一次收費怎麼開口，或 https://youtu.be/…",
-        height=96,
-        key="source_input",
-    )
-    references = topic
-    st.caption("這支內容只是研究起點；後續仍會搜尋、比較多支影片與留言。")
+references = ""
+st.caption("可以只給一個類別，也可以寫一個想拍的方向；剩下的交給我。")
 with st.expander("選填：縮小範圍"):
     exclusions = st.text_input(
         "不想看到什麼",
