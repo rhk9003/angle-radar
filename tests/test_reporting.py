@@ -9,7 +9,9 @@ from reporting import (
     angle_development_prompt,
     angle_report_prompt,
     build_comparison_matrix,
+    build_public_export,
     keyword_reflow_prompt,
+    render_action_card_preview,
     render_angle_report,
     research_synthesis_prompt,
     validate_angle_evidence,
@@ -499,6 +501,62 @@ class ReportingTests(unittest.TestCase):
             self.assertIn(value, rendered)
         self.assertNotIn("來源內容結論", rendered)
         self.assertNotIn("這個切角從哪裡挖到", rendered)
+
+    def test_card_preview_only_shows_scannable_decision_fields(self):
+        preview = render_action_card_preview(action_card(), 2)
+
+        for value in ("2. 第一批客戶從哪裡來", "核心訊息", "開場"):
+            self.assertIn(value, preview)
+        for value in ("你可以這樣拍", "為什麼值得拍", "不要拍成", "來源與限制"):
+            self.assertNotIn(value, preview)
+
+    def test_export_only_includes_selected_cards_prompts_and_sources(self):
+        report = {
+            "radar_summary": "本次摘要",
+            "angles": [
+                action_card(
+                    angle_name="未收藏卡",
+                    core_message="未收藏核心",
+                    evidence_video_ids=["video-1"],
+                ),
+                action_card(
+                    angle_name="已收藏卡",
+                    core_message="已收藏核心",
+                    evidence_video_ids=["video-2"],
+                ),
+            ],
+        }
+        videos = [
+            {
+                "id": "video-1",
+                "title": "未收藏來源",
+                "url": "https://youtu.be/1",
+                "channel": "A",
+                "view_count": 100,
+            },
+            {
+                "id": "video-2",
+                "title": "已收藏來源",
+                "url": "https://youtu.be/2",
+                "channel": "B",
+                "view_count": 200,
+            },
+        ]
+        rendered = render_angle_report(report, "命理創業", videos)
+
+        exported = build_public_export(
+            rendered,
+            report,
+            videos,
+            "2026-07-21 12:00:00",
+            "命理創業",
+            selected_angle_indexes=[1],
+        )
+
+        for value in ("已收藏卡", "已收藏核心", "已收藏來源"):
+            self.assertIn(value, exported)
+        for value in ("未收藏卡", "未收藏核心", "未收藏來源"):
+            self.assertNotIn(value, exported)
 
     def test_missing_insight_downgrades_claim(self):
         report = {

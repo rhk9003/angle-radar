@@ -7,8 +7,9 @@ import os
 import sqlite3
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 class JsonTTLCache:
@@ -22,8 +23,17 @@ class JsonTTLCache:
         connection.execute("PRAGMA journal_mode=WAL")
         return connection
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS cache_entries (
@@ -55,7 +65,7 @@ class JsonTTLCache:
             )
 
     def get(self, key: str) -> Any | None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 "SELECT payload, created_at, ttl_seconds FROM cache_entries WHERE cache_key = ?",
                 (key,),
@@ -74,7 +84,7 @@ class JsonTTLCache:
 
     def set(self, key: str, value: Any, ttl_seconds: int) -> None:
         payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 INSERT INTO cache_entries(cache_key, payload, created_at, ttl_seconds)
@@ -88,7 +98,7 @@ class JsonTTLCache:
             )
 
     def delete_prefix(self, prefix: str) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute("DELETE FROM cache_entries WHERE cache_key LIKE ?", (f"{prefix}%",))
 
     def record_video_observations(
@@ -100,7 +110,7 @@ class JsonTTLCache:
         """留下觀看快照；間隔足夠時回傳實際新增觀看的日速度。"""
         observed_at = float(now if now is not None else time.time())
         velocities: dict[str, float] = {}
-        with self._connect() as connection:
+        with self._connection() as connection:
             for video in videos:
                 video_id = str(video.get("id", "")).strip()
                 if not video_id:

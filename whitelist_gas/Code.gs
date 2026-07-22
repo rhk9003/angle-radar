@@ -11,6 +11,7 @@
  *   action=refund  ：加 1（點單失敗時退還）
  *   action=feedback：記錄切角新穎度與可用性回饋
  *   action=log_usage：記錄每次分析的輸入、輸出、狀態與時間
+ *   action=track_event：記錄收藏、複製 Prompt 與下載等最終行為
  * 回傳 JSON：{ok, name, remaining, deep, error?}
  *
  * 安裝見 SETUP.md
@@ -51,6 +52,10 @@ function handle_(e) {
         }
         if (action === 'log_usage') {
           appendUsageLog_(code, name, p);
+          return json_({ ok: true });
+        }
+        if (action === 'track_event') {
+          appendUsageEvent_(code, name, p);
           return json_({ ok: true });
         }
         if (action === 'consume') {
@@ -98,6 +103,25 @@ function appendUsageLog_(code, name, p) {
     safeCell_(p.quota_refunded), safeCell_(p.input_mode), safeCell_(p.input, 10000),
     safeCell_(p.exclusions, 10000), safeCell_(p.output, 49000),
     safeCell_(p.error, 5000)
+  ]);
+}
+
+function appendUsageEvent_(code, name, p) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName('usage_events');
+  if (!sh) {
+    sh = ss.insertSheet('usage_events');
+    sh.appendRow([
+      'timestamp', 'request_id', 'code', 'name', 'event_type', 'angle_key',
+      'angle_index', 'angle_name', 'topic', 'details'
+    ]);
+    sh.setFrozenRows(1);
+  }
+  sh.appendRow([
+    new Date(), safeCell_(p.request_id), safeCell_(code), safeCell_(name),
+    safeCell_(p.event_type), safeCell_(p.angle_key), safeCell_(p.angle_index),
+    safeCell_(p.angle_name, 5000), safeCell_(p.topic, 10000),
+    safeCell_(p.details, 10000)
   ]);
 }
 

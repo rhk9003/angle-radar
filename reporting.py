@@ -1236,6 +1236,45 @@ def render_action_card(angle: dict[str, Any], index: int | None = None) -> str:
     )
 
 
+def render_action_card_preview(angle: dict[str, Any], index: int | None = None) -> str:
+    """Compact card face; supporting detail stays behind an expander in the app."""
+    prefix = f"{index}. " if index is not None else ""
+    strategy = _PUBLIC_SIGNAL_LABEL.get(
+        str(angle.get("internal_signal_type", "other")),
+        _PUBLIC_SIGNAL_LABEL["other"],
+    )
+    opening = _public_generated_text(angle.get("opening_line", "")).strip("「」")
+    return "\n".join(
+        [
+            f"`{strategy}`",
+            "",
+            f"#### {prefix}{_public_generated_text(angle.get('angle_name', '未命名選題'))}",
+            "",
+            f"**核心訊息**  \n{_public_generated_text(angle.get('core_message', ''))}",
+            "",
+            f"> **開場**：「{opening}」",
+        ]
+    )
+
+
+def render_action_card_details(angle: dict[str, Any]) -> str:
+    """Secondary card content shown only when the user asks for more detail."""
+    idea = re.sub(
+        r"^你可以拍[：:，,\s]*",
+        "",
+        _public_generated_text(angle.get("you_can_make", "")),
+    )
+    return "\n\n".join(
+        [
+            f"**你可以拍**：{idea}",
+            f"**你可以這樣拍**：{_public_generated_text(angle.get('how_to_make', ''))}",
+            f"**和現有內容拉開差異**：{_public_generated_text(angle.get('differentiation', ''))}",
+            f"**為什麼值得拍**：{_public_generated_text(angle.get('why_worth_making', ''))}",
+            f"**不要拍成**：{_public_generated_text(angle.get('avoid', ''))}",
+        ]
+    )
+
+
 def render_action_evidence(
     angle: dict[str, Any], pool_videos: list[dict[str, Any]]
 ) -> str:
@@ -1359,17 +1398,31 @@ def build_public_export(
     pool_videos: list[dict[str, Any]],
     created_at: str,
     topic: str,
+    selected_angle_indexes: list[int] | None = None,
 ) -> str:
-    """匯出成果、單一卡 Prompt 與引用，不包含研究流程及中間資料。"""
+    """匯出收藏的成果、Prompt 與引用，不包含研究流程及中間資料。"""
+    active_report = report
+    active_rendered_report = rendered_report
+    if selected_angle_indexes is not None:
+        selected = set(selected_angle_indexes)
+        active_report = {
+            **report,
+            "angles": [
+                angle
+                for index, angle in enumerate(report.get("angles", []))
+                if index in selected
+            ],
+        }
+        active_rendered_report = render_angle_report(active_report, topic, pool_videos)
     videos = {str(video.get("id", "")): video for video in pool_videos}
     cited_ids = {
         str(video_id)
-        for angle in report.get("angles", [])
+        for angle in active_report.get("angles", [])
         for video_id in angle.get("evidence_video_ids", [])
     }
     cited = [videos[video_id] for video_id in cited_ids if video_id in videos]
-    lines = [rendered_report, "", "---", "", "# 把切角交給你的 AI", ""]
-    for index, angle in enumerate(report.get("angles", []), start=1):
+    lines = [active_rendered_report, "", "---", "", "# 把切角交給你的 AI", ""]
+    for index, angle in enumerate(active_report.get("angles", []), start=1):
         lines.extend(
             [
                 f"## {index}. {_public_generated_text(angle.get('angle_name', '未命名切角'))}",
