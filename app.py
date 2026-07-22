@@ -40,6 +40,7 @@ from reporting import (
     KEYWORD_REFLOW_SCHEMA,
     KEYWORD_PLAN_SCHEMA,
     RELEVANCE_SCHEMA,
+    angle_report_needs_fallback,
     angle_development_prompt,
     angle_report_prompt,
     breakdown_batch_prompt,
@@ -62,8 +63,10 @@ from youtube_data import YouTubeData
 
 st.set_page_config(page_title="切角雷達", layout="wide")
 
-DEFAULT_PIPELINE_MODEL = "gemini-3.1-flash-lite"
-DEFAULT_REPORT_MODEL = "gemini-3.5-flash"
+DEFAULT_MECHANICAL_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_SYNTHESIS_MODEL = "gemini-3.1-flash-lite"
+DEFAULT_REPORT_MODEL = "gemini-3-flash-preview"
+DEFAULT_REPORT_FALLBACK_MODEL = "gemini-3.5-flash"
 BREAKDOWN_PROMPT_VERSION = "angle-evidence-v5"
 BREAKDOWN_BATCH_SIZE = 4
 MAX_REFLOW_TERMS = 2
@@ -459,7 +462,7 @@ def run_pipeline(
 
         plan = gemini.generate_json(
             stage="關鍵字起點生成",
-            model=cfg["pipeline_model"],
+            model=cfg["mechanical_model"],
             prompt=keyword_plan_prompt(
                 topic,
                 exclusions,
@@ -468,7 +471,7 @@ def run_pipeline(
             ),
             schema=KEYWORD_PLAN_SCHEMA,
             max_output_tokens=1_400,
-            thinking_level="low",
+            thinking_level=None,
         )
         if not plan.get("core_terms"):
             plan["core_terms"] = [topic]
@@ -578,7 +581,7 @@ def run_pipeline(
         try:
             relevance = gemini.generate_json(
                 stage="候選相關性檢查",
-                model=cfg["pipeline_model"],
+                model=cfg["mechanical_model"],
                 prompt=relevance_prompt(
                     topic,
                     sorted(
@@ -594,7 +597,7 @@ def run_pipeline(
                 ),
                 schema=RELEVANCE_SCHEMA,
                 max_output_tokens=500,
-                thinking_level="low",
+                thinking_level=None,
             )
             irrelevant = set(relevance.get("irrelevant_ids", []))
             filtered = [
@@ -651,13 +654,13 @@ def run_pipeline(
             try:
                 reflow_response = gemini.generate_json(
                     stage="資料回流關鍵字",
-                    model=cfg["pipeline_model"],
+                    model=cfg["mechanical_model"],
                     prompt=keyword_reflow_prompt(
                         topic, reflow_candidates, existing_terms
                     ),
                     schema=KEYWORD_REFLOW_SCHEMA,
                     max_output_tokens=800,
-                    thinking_level="low",
+                    thinking_level=None,
                 )
                 reflow_terms = validate_reflow_selection(
                     reflow_response,
@@ -803,7 +806,7 @@ def run_pipeline(
             gemini,
             ledger,
             cache,
-            cfg["pipeline_model"],
+            cfg["mechanical_model"],
             packets,
         )
         result["breakdowns"] = breakdowns
@@ -833,7 +836,7 @@ def run_pipeline(
         )
         raw_synthesis = gemini.generate_json(
             stage="跨來源比較歸納",
-            model=cfg["pipeline_model"],
+            model=cfg["synthesis_model"],
             prompt=research_synthesis_prompt(
                 topic,
                 selected,
@@ -884,30 +887,57 @@ def run_pipeline(
             )
         result["research_synthesis"] = synthesis
 
-        angle_report = gemini.generate_json(
-            stage="切角雷達生成",
-            model=cfg["report_model"],
-            prompt=angle_report_prompt(
-                topic,
-                synthesis,
-                all_videos,
-                cfg["n_angles"],
-                exclusions,
-                references,
-            ),
-            schema=ANGLE_REPORT_SCHEMA,
-            max_output_tokens=8_000,
-            thinking_level="low",
-            temperature=0.3,
+        report_prompt = angle_report_prompt(
+            topic,
+            synthesis,
+            all_videos,
+            cfg["n_angles"],
+            exclusions,
+            references,
         )
-        angle_report["angles"] = angle_report.get("angles", [])[
-            : min(cfg["n_angles"], 6)
-        ]
-        if not angle_report["angles"]:
-            raise RuntimeError("模型沒有產出可用切角。")
-        angle_report = validate_angle_evidence(
-            angle_report, all_videos, synthesis, rising_signals
-        )
+
+        def generate_angle_report(model: str, stage: str) -> dict[str, Any]:
+            generated = gemini.generate_json(
+                stage=stage,
+                model=model,
+                prompt=report_prompt,
+                schema=ANGLE_REPORT_SCHEMA,
+                max_output_tokens=8_000,
+                thinking_level="low",
+                temperature=0.3,
+            )
+            generated["angles"] = generated.get("angles", [])[: min(cfg["n_angles"], 6)]
+            if not generated["angles"]:
+                raise RuntimeError("模型沒有產出可用切角。")
+            return validate_angle_evidence(
+                generated, all_videos, synthesis, rising_signals
+            )
+
+        fallback_model = cfg["report_fallback_model"]
+        fallback_used = False
+        try:
+            angle_report = generate_angle_report(
+                cfg["report_model"], "切角雷達生成"
+            )
+        except Exception as exc:
+            if fallback_model == cfg["report_model"]:
+                raise
+            LOGGER.warning("Primary report model failed; using fallback: %s", exc)
+            fallback_used = True
+            angle_report = generate_angle_report(
+                fallback_model, "切角雷達生成（品質補救）"
+            )
+        else:
+            if (
+                fallback_model != cfg["report_model"]
+                and angle_report_needs_fallback(angle_report)
+            ):
+                fallback_used = True
+                angle_report = generate_angle_report(
+                    fallback_model, "切角雷達生成（品質補救）"
+                )
+
+        result["report_fallback_used"] = fallback_used
         result["angle_report"] = angle_report
         result["report"] = render_angle_report(angle_report, topic, all_videos)
         result["usage"] = ledger.summary()
@@ -949,20 +979,6 @@ with st.sidebar:
     if is_admin:
         st.markdown("---")
         st.markdown("**管理者設定**")
-        REPORT_MODEL = st.selectbox(
-            "報告模型",
-            [
-                "gemini-3.5-flash",
-                "gemini-3.1-pro-preview",
-                "gemini-3-flash-preview",
-                "gemini-2.5-pro",
-                "gemini-2.5-flash",
-            ],
-        )
-        PIPELINE_MODEL = st.selectbox(
-            "資料整理模型",
-            ["gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash"],
-        )
         with st.expander("進階參數"):
             N_ANGLES = st.slider("切角上限", 4, 6, 6)
             N_EN = st.slider("英文查詢數", 1, MAX_FIRST_ROUND_EN, 2)
@@ -979,8 +995,6 @@ with st.sidebar:
                 "影片類型", ["全部", "僅長片", "僅 Shorts"], horizontal=True
             )
     else:
-        REPORT_MODEL = DEFAULT_REPORT_MODEL
-        PIPELINE_MODEL = DEFAULT_PIPELINE_MODEL
         N_ANGLES, N_EN, N_ZH = 6, 2, 4
         PER_KW, ANALYZE_N, WINDOW_DAYS, MIN_VIEWS = 25, 8, 180, 3_000
         VIDEO_TYPE = "全部"
@@ -1035,8 +1049,10 @@ if run_clicked:
             config = {
                 "gemini_key": GEMINI_API_KEY,
                 "yt_key": YOUTUBE_API_KEY,
-                "report_model": REPORT_MODEL,
-                "pipeline_model": PIPELINE_MODEL,
+                "mechanical_model": DEFAULT_MECHANICAL_MODEL,
+                "synthesis_model": DEFAULT_SYNTHESIS_MODEL,
+                "report_model": DEFAULT_REPORT_MODEL,
+                "report_fallback_model": DEFAULT_REPORT_FALLBACK_MODEL,
                 "n_angles": N_ANGLES,
                 "n_zh": N_ZH,
                 "n_en": N_EN,

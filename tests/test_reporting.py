@@ -6,6 +6,7 @@ from reporting import (
     KEYWORD_PLAN_SCHEMA,
     KEYWORD_REFLOW_SCHEMA,
     RESEARCH_SYNTHESIS_SCHEMA,
+    angle_report_needs_fallback,
     angle_development_prompt,
     angle_report_prompt,
     build_comparison_matrix,
@@ -61,6 +62,53 @@ def validated_synthesis():
 
 
 class ReportingTests(unittest.TestCase):
+    def test_angle_report_quality_gate_accepts_four_supported_directions(self):
+        report = {
+            "angles": [
+                action_card(
+                    angle_name="第一次收費前的三個驗證",
+                    you_can_make="第一次向陌生人收費前，先檢查哪三件事。",
+                    core_message="把試做、試收費與正式服務拆成三段。",
+                ),
+                action_card(
+                    angle_name="免費諮詢何時該停止",
+                    you_can_make="免費回答到哪一步，就應該轉成正式服務。",
+                    core_message="用問題深度與所需時間畫出免費界線。",
+                ),
+                action_card(
+                    angle_name="沒有案例也能找第一位客戶",
+                    you_can_make="還沒有客戶見證時，如何證明自己的服務值得買。",
+                    core_message="先展示判斷流程，再邀請小規模試用。",
+                ),
+                action_card(
+                    angle_name="新手定價不要只看同行",
+                    you_can_make="第一版價格應該比較成本、承諾與交付範圍。",
+                    core_message="定價是服務邊界，不只是市場平均數。",
+                ),
+            ]
+        }
+
+        self.assertFalse(angle_report_needs_fallback(report))
+
+    def test_angle_report_quality_gate_rejects_duplicates_or_missing_evidence(self):
+        duplicate = action_card()
+        duplicate_report = {"angles": [duplicate, duplicate, duplicate, duplicate]}
+        unsupported_report = {
+            "angles": [
+                action_card(
+                    angle_name=f"方向 {index}",
+                    you_can_make=f"針對第 {index} 種情境提出不同做法。",
+                    core_message=f"回答第 {index} 個不同問題。",
+                    evidence_insight_ids=[],
+                    evidence_video_ids=[],
+                )
+                for index in range(4)
+            ]
+        }
+
+        self.assertTrue(angle_report_needs_fallback(duplicate_report))
+        self.assertTrue(angle_report_needs_fallback(unsupported_report))
+
     def test_breakdown_schema_stays_small_and_flat(self):
         videos = BREAKDOWN_BATCH_SCHEMA["properties"]["videos"]
         self.assertEqual(videos["maxItems"], 4)
