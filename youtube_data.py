@@ -1,4 +1,4 @@
-"""YouTube 搜尋、頻道基準、字幕與留言資料層。"""
+"""YouTube Data API 搜尋、頻道基準與留言資料層。"""
 
 from __future__ import annotations
 
@@ -554,49 +554,3 @@ class YouTubeData:
     ) -> list[dict[str, Any]]:
         """向下相容的單排序入口。新研究流程使用 sample_comments。"""
         return self._comments_for_order(video_id, "relevance", max_results)
-
-    def transcript_segments(self, video_id: str, market: str) -> list[dict[str, Any]]:
-        key = f"transcript:{stable_hash([video_id, market])}"
-        cached = self.cache.get(key)
-        if cached is not None:
-            self._hit()
-            return cached
-        languages = (
-            ["zh-TW", "zh-Hant", "zh", "zh-CN", "en"]
-            if market == "zh"
-            else ["en", "en-US", "en-GB", "zh-TW", "zh"]
-        )
-        try:
-            from youtube_transcript_api import YouTubeTranscriptApi
-
-            try:
-                fetched = YouTubeTranscriptApi().fetch(video_id, languages=languages)
-                snippets = getattr(fetched, "snippets", fetched)
-            except AttributeError:
-                snippets = YouTubeTranscriptApi.get_transcript(
-                    video_id, languages=languages
-                )
-            output = []
-            for snippet in snippets:
-                if hasattr(snippet, "text"):
-                    text = snippet.text
-                    start = getattr(snippet, "start", 0)
-                    duration = getattr(snippet, "duration", 0)
-                else:
-                    text = snippet.get("text", "")
-                    start = snippet.get("start", 0)
-                    duration = snippet.get("duration", 0)
-                clean = re.sub(r"\s+", " ", str(text)).strip()
-                if clean:
-                    output.append(
-                        {
-                            "text": clean,
-                            "start": float(start or 0),
-                            "duration": float(duration or 0),
-                        }
-                    )
-            self.cache.set(key, output, 604_800)
-            return output
-        except Exception as exc:
-            self.errors.append(f"transcript:{video_id}:{exc}")
-            return []

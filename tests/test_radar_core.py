@@ -7,12 +7,11 @@ from radar_core import (
     build_brief,
     build_reflow_candidates,
     build_search_terms,
-    build_transcript_evidence,
     compress_comments,
     derive_rising_signals,
     merge_search_results,
     parse_youtube_video_ids,
-    pick_evidence_ready_videos,
+    pick_budgeted_video_evidence,
     pick_videos_diverse,
     usage_quota_required,
     validate_reflow_selection,
@@ -43,16 +42,6 @@ class BriefTests(unittest.TestCase):
 
 
 class EvidenceTests(unittest.TestCase):
-    def test_timed_evidence_keeps_hook_and_ending(self):
-        segments = [
-            {"start": index * 10, "duration": 5, "text": f"第 {index} 段內容 " * 8}
-            for index in range(31)
-        ]
-        evidence = build_transcript_evidence(segments, max_chars=1_500)
-        self.assertIn("[00:00]", evidence)
-        self.assertTrue("[04:50]" in evidence or "[05:00]" in evidence)
-        self.assertLessEqual(len(evidence), 1_500)
-
     def test_comments_are_ranked_and_deduplicated(self):
         comments = [
             {"text": "希望可以補上價格比較", "likes": 20, "replies": 4},
@@ -135,19 +124,32 @@ class KeywordTests(unittest.TestCase):
         self.assertEqual(selected[0]["source_video_ids"], ["video-1"])
         self.assertEqual(selected[0]["market"], "zh")
 
-    def test_evidence_selection_refills_missing_transcript_video(self):
+    def test_evidence_selection_enforces_video_minute_budget_and_keeps_fallback(self):
         candidates = [
-            {"id": "empty", "evidence_score": 100},
-            {"id": "ready-1", "evidence_score": 80},
-            {"id": "ready-2", "evidence_score": 70},
+            {
+                "id": "reference-long",
+                "duration_min": 45,
+                "evidence_score": 100,
+                "is_reference": True,
+            },
+            {"id": "video-25", "duration_min": 25, "evidence_score": 90},
+            {"id": "video-20", "duration_min": 20, "evidence_score": 80},
+            {"id": "video-10", "duration_min": 10, "evidence_score": 70},
+            {"id": "video-unknown", "duration_min": 0, "evidence_score": 60},
         ]
-        selected = pick_evidence_ready_videos(
+        selection = pick_budgeted_video_evidence(
             candidates,
-            {"ready-1": [{"text": "字幕"}]},
-            {"ready-2": [{"text": str(index)} for index in range(4)]},
-            2,
+            {"video-20": [{"text": str(index)} for index in range(4)]},
+            5,
+            max_total_minutes=50,
+            max_single_minutes=30,
         )
-        self.assertEqual({item["id"] for item in selected}, {"ready-1", "ready-2"})
+        self.assertEqual(
+            selection["video_input_ids"], ["video-20", "video-25"]
+        )
+        self.assertEqual(selection["total_video_minutes"], 45)
+        self.assertIn("reference-long", selection["fallback_ids"])
+        self.assertEqual(len(selection["videos"]), 5)
 
     def test_one_plan_combines_core_question_and_one_round_related_terms(self):
         plan = {

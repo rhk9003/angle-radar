@@ -256,11 +256,38 @@ class UsageLedger:
             total_tokens = input_tokens + output_tokens + thinking_tokens
         pricing = MODEL_PRICING.get(model, {})
         regular_input = max(input_tokens - cached_tokens, 0)
-        estimated_usd = (
-            regular_input * float(pricing.get("input", 0))
-            + cached_tokens * float(pricing.get("cached", pricing.get("input", 0)))
-            + (output_tokens + thinking_tokens) * float(pricing.get("output", 0))
-        ) / 1_000_000
+        details = usage_metadata_snapshot(usage).get("prompt_tokens_details", [])
+        if details and not cached_tokens:
+            detailed_tokens = sum(int(row.get("tokens", 0) or 0) for row in details)
+            input_usd = sum(
+                int(row.get("tokens", 0) or 0)
+                * float(
+                    pricing.get(
+                        "input_audio"
+                        if str(row.get("modality", "")).lower() == "audio"
+                        else "input",
+                        pricing.get("input", 0),
+                    )
+                )
+                / 1_000_000
+                for row in details
+            )
+            input_usd += (
+                max(input_tokens - detailed_tokens, 0)
+                * float(pricing.get("input", 0))
+                / 1_000_000
+            )
+        else:
+            input_usd = (
+                regular_input * float(pricing.get("input", 0))
+                + cached_tokens
+                * float(pricing.get("cached", pricing.get("input", 0)))
+            ) / 1_000_000
+        estimated_usd = input_usd + (
+            (output_tokens + thinking_tokens)
+            * float(pricing.get("output", 0))
+            / 1_000_000
+        )
         record = UsageRecord(
             stage=stage,
             model=model,
@@ -301,7 +328,7 @@ class UsageLedger:
             "estimated_usd": round(estimated_usd, 6),
             "estimated_twd": round(estimated_usd * usd_to_twd, 2),
             "records": records,
-            "pricing_date": "2026-07-20",
+            "pricing_date": "2026-07-22",
         }
 
 
@@ -455,6 +482,47 @@ class GeminiClient:
     def count_tokens(self, model: str, contents: Any) -> int:
         response = self._client.models.count_tokens(model=model, contents=contents)
         return _read_value(response, "total_tokens", "total_token_count")
+
+    def generate_youtube_json_once(
+        self,
+        *,
+        stage: str,
+        youtube_url: str,
+        model: str,
+        prompt: str,
+        schema: dict[str, Any],
+        max_output_tokens: int = 1_000,
+    ) -> dict[str, Any]:
+        """官方 YouTube URL 低解析內容證據；只呼叫一次，失敗交由上層降級。"""
+        contents = self._types.Content(
+            role="user",
+            parts=[
+                self._types.Part(
+                    file_data=self._types.FileData(file_uri=youtube_url)
+                ),
+                self._types.Part(text=prompt),
+            ],
+        )
+        response = self._client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=self._config(
+                max_output_tokens=max_output_tokens,
+                temperature=0.0,
+                thinking_level=None,
+                schema=schema,
+                media_resolution_low=True,
+            ),
+        )
+        self._ledger.record(stage, model, getattr(response, "usage_metadata", {}))
+        parsed = getattr(response, "parsed", None)
+        if isinstance(parsed, dict):
+            return parsed
+        if parsed is not None and hasattr(parsed, "model_dump"):
+            parsed_value = parsed.model_dump()
+            if isinstance(parsed_value, dict):
+                return parsed_value
+        return _parse_json_object(getattr(response, "text", "") or "")
 
     def probe_youtube_url(
         self,

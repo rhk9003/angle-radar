@@ -21,7 +21,9 @@ import llm_client as _llm_client
 
 # Streamlit Cloud may rerun app.py while retaining an older imported module.
 # Reload once when a newly deployed symbol is missing so multi-file updates stay atomic.
-if not hasattr(_llm_client, "classify_youtube_input_route"):
+if not hasattr(_llm_client, "classify_youtube_input_route") or not hasattr(
+    _llm_client.GeminiClient, "generate_youtube_json_once"
+):
     _llm_client = importlib.reload(_llm_client)
 
 GeminiClient = _llm_client.GeminiClient
@@ -32,13 +34,12 @@ from radar_core import (
     attach_outlier_metrics_v2,
     build_reflow_candidates,
     build_search_terms,
-    build_transcript_evidence,
     compress_comments,
     derive_rising_signals,
     market_coverage,
     merge_search_results,
     parse_youtube_video_ids,
-    pick_evidence_ready_videos,
+    pick_budgeted_video_evidence,
     pick_videos_diverse,
     stable_hash,
     usage_quota_required,
@@ -47,6 +48,7 @@ from radar_core import (
 from reporting import (
     ANGLE_REPORT_SCHEMA,
     BREAKDOWN_BATCH_SCHEMA,
+    BREAKDOWN_ITEM_SCHEMA,
     KEYWORD_REFLOW_SCHEMA,
     KEYWORD_PLAN_SCHEMA,
     RELEVANCE_SCHEMA,
@@ -67,6 +69,7 @@ from reporting import (
     research_synthesis_prompt,
     validate_angle_evidence,
     validate_research_synthesis,
+    video_evidence_prompt,
 )
 from youtube_data import YouTubeData
 
@@ -77,7 +80,7 @@ DEFAULT_MECHANICAL_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_SYNTHESIS_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_REPORT_MODEL = "gemini-3-flash-preview"
 DEFAULT_REPORT_FALLBACK_MODEL = "gemini-3.5-flash"
-BREAKDOWN_PROMPT_VERSION = "angle-evidence-v5"
+BREAKDOWN_PROMPT_VERSION = "angle-evidence-v6-gemini-video"
 BREAKDOWN_BATCH_SIZE = 4
 MAX_REFLOW_TERMS = 2
 MAX_FIRST_ROUND_ZH = 4
@@ -86,6 +89,10 @@ MAX_DISCOVERY_VIDEOS = 10
 MAX_EVIDENCE_PROBES = 12
 MAX_RELEVANCE_VIDEOS = 180
 COMMENTS_PER_ORDER = 40
+MAX_VIDEO_EVIDENCE_SOURCES = 8
+MAX_VIDEO_EVIDENCE_MINUTES = 60
+MAX_SINGLE_VIDEO_MINUTES = 30
+STANDARD_ANALYSIS_COST_CEILING_TWD = 4.5
 LOGGER = logging.getLogger(__name__)
 
 YOUTUBE_CC_PROBE_SCHEMA = {
@@ -305,17 +312,18 @@ def _apply_negatives(query: str, negatives: list[str]) -> str:
 
 def _video_packet(
     video: dict[str, Any],
-    transcript: list[dict[str, Any]],
     comments: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    evidence = build_transcript_evidence(transcript, max_chars=3_000)
     compact_comments = compress_comments(comments, limit=12, max_chars_each=180)
     for index, comment in enumerate(compact_comments, start=1):
         if not comment.get("ref"):
             comment["ref"] = f"{video['id']}:sample-{index}"
     return {
         "video_id": video["id"],
+        "youtube_url": f"https://www.youtube.com/watch?v={video['id']}",
         "title": video.get("title", ""),
+        "description": str(video.get("description", ""))[:500],
+        "tags": list(video.get("tags", []))[:12],
         "duration_min": video.get("duration_min", 0),
         "metrics": {
             "views": video.get("view_count", 0),
@@ -324,10 +332,10 @@ def _video_packet(
             "baseline_sample_size": video.get("baseline_sample_size", 0),
             "metric_confidence": video.get("outlier_confidence", "low"),
         },
-        "timed_transcript_evidence": evidence or "（沒有可用字幕）",
         "comments": compact_comments,
-        "source_quality": "timed_transcript"
-        if evidence
+        "video_content_enabled": bool(video.get("video_content_enabled")),
+        "source_quality": "gemini_video_pending"
+        if video.get("video_content_enabled")
         else "metadata_and_comments_only",
     }
 
@@ -353,43 +361,108 @@ def _analyze_packets(
     cache: JsonTTLCache,
     model: str,
     packets: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     output: dict[str, dict[str, Any]] = {}
-    misses: list[dict[str, Any]] = []
-    key_by_id: dict[str, str] = {}
+    fallback_packets: list[dict[str, Any]] = []
+    stats: dict[str, Any] = {
+        "video_requested": 0,
+        "video_succeeded": 0,
+        "video_failed": 0,
+        "metadata_fallback": 0,
+        "video_cache_hits": 0,
+        "metadata_cache_hits": 0,
+        "failure_classes": [],
+    }
+
     for packet in packets:
-        cache_key = "breakdown:" + stable_hash(
+        video_id = packet["video_id"]
+        if not packet.get("video_content_enabled"):
+            fallback_packets.append(packet)
+            continue
+        stats["video_requested"] += 1
+        video_cache_key = "video-breakdown:" + stable_hash(
             [BREAKDOWN_PROMPT_VERSION, model, packet]
         )
-        key_by_id[packet["video_id"]] = cache_key
-        cached = cache.get(cache_key)
+        cached = cache.get(video_cache_key)
         if cached:
-            output[packet["video_id"]] = cached
-            ledger.local_cache("影片證據分析", model)
-        else:
-            misses.append(packet)
+            output[video_id] = cached
+            stats["video_cache_hits"] += 1
+            ledger.local_cache("影片內容證據", model)
+            continue
+        failure_key = "video-breakdown-failure:" + stable_hash([model, video_id])
+        if cache.get(failure_key):
+            fallback_packets.append(packet)
+            stats["video_failed"] += 1
+            stats["failure_classes"].append("recent_provider_failure")
+            continue
+        try:
+            breakdown = gemini.generate_youtube_json_once(
+                stage="影片內容證據",
+                youtube_url=packet["youtube_url"],
+                model=model,
+                prompt=video_evidence_prompt(packet),
+                schema=BREAKDOWN_ITEM_SCHEMA,
+                max_output_tokens=1_000,
+            )
+            breakdown["video_id"] = video_id
+            breakdown["_source_quality"] = "gemini_video"
+            output[video_id] = breakdown
+            cache.set(video_cache_key, breakdown, 604_800)
+            stats["video_succeeded"] += 1
+        except Exception as exc:
+            LOGGER.warning("Gemini video evidence failed for %s: %s", video_id, exc)
+            cache.set(failure_key, {"error_class": type(exc).__name__}, 1_800)
+            fallback_packets.append(packet)
+            stats["video_failed"] += 1
+            stats["failure_classes"].append(type(exc).__name__)
 
-    for start in range(0, len(misses), BREAKDOWN_BATCH_SIZE):
-        batch = misses[start : start + BREAKDOWN_BATCH_SIZE]
-        response = gemini.generate_json(
-            stage="影片證據分析",
-            model=model,
-            prompt=breakdown_batch_prompt(batch),
-            schema=BREAKDOWN_BATCH_SCHEMA,
-            max_output_tokens=min(3_800, 800 * len(batch) + 500),
-            thinking_level=None,
+    pending_fallback: list[dict[str, Any]] = []
+    fallback_key_by_id: dict[str, str] = {}
+    for packet in fallback_packets:
+        video_id = packet["video_id"]
+        fallback_key = "metadata-breakdown:" + stable_hash(
+            [BREAKDOWN_PROMPT_VERSION, model, packet]
         )
-        valid_ids = {packet["video_id"] for packet in batch}
-        for breakdown in response.get("videos", []):
-            video_id = str(breakdown.get("video_id", ""))
-            if video_id in valid_ids:
-                output[video_id] = breakdown
-                cache.set(key_by_id[video_id], breakdown, 604_800)
+        fallback_key_by_id[video_id] = fallback_key
+        cached = cache.get(fallback_key)
+        if cached:
+            output[video_id] = cached
+            stats["metadata_cache_hits"] += 1
+            ledger.local_cache("影片證據降級", model)
+        else:
+            pending_fallback.append(packet)
 
-    return [
-        output.get(packet["video_id"], _fallback_breakdown(packet))
-        for packet in packets
-    ]
+    for start in range(0, len(pending_fallback), BREAKDOWN_BATCH_SIZE):
+        batch = pending_fallback[start : start + BREAKDOWN_BATCH_SIZE]
+        valid_ids = {packet["video_id"] for packet in batch}
+        try:
+            response = gemini.generate_json(
+                stage="影片證據降級",
+                model=model,
+                prompt=breakdown_batch_prompt(batch),
+                schema=BREAKDOWN_BATCH_SCHEMA,
+                max_output_tokens=min(3_800, 800 * len(batch) + 500),
+                thinking_level=None,
+            )
+            for breakdown in response.get("videos", []):
+                video_id = str(breakdown.get("video_id", ""))
+                if video_id in valid_ids:
+                    breakdown["_source_quality"] = "metadata_and_comments_only"
+                    output[video_id] = breakdown
+                    cache.set(fallback_key_by_id[video_id], breakdown, 604_800)
+        except Exception as exc:
+            LOGGER.warning("Metadata/comments evidence fallback failed: %s", exc)
+            stats["failure_classes"].append(type(exc).__name__)
+
+    breakdowns = []
+    for packet in packets:
+        breakdown = output.get(packet["video_id"], _fallback_breakdown(packet))
+        if breakdown.get("_source_quality") != "gemini_video":
+            stats["metadata_fallback"] += 1
+        breakdowns.append(breakdown)
+
+    stats["failure_classes"] = sorted(set(stats["failure_classes"]))
+    return breakdowns, stats
 
 
 def _safe_future_result(future: concurrent.futures.Future[Any]) -> list[dict[str, Any]]:
@@ -414,25 +487,6 @@ def _collect_comments(
                 COMMENTS_PER_ORDER,
             ): video["id"]
             for video in targets
-        }
-        for future in concurrent.futures.as_completed(futures):
-            output[futures[future]] = _safe_future_result(future)
-    return output
-
-
-def _collect_transcripts(
-    youtube: YouTubeData,
-    videos: list[dict[str, Any]],
-) -> dict[str, list[dict[str, Any]]]:
-    output: dict[str, list[dict[str, Any]]] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {
-            executor.submit(
-                youtube.transcript_segments,
-                video["id"],
-                video.get("market", "zh"),
-            ): video["id"]
-            for video in videos
         }
         for future in concurrent.futures.as_completed(futures):
             output[futures[future]] = _safe_future_result(future)
@@ -839,13 +893,14 @@ def run_pipeline(
         )[:MAX_EVIDENCE_PROBES]
 
         comments_map = _collect_comments(youtube, evidence_candidates, comments_map)
-        transcript_map = _collect_transcripts(youtube, evidence_candidates)
-        selected_videos = pick_evidence_ready_videos(
+        evidence_selection = pick_budgeted_video_evidence(
             evidence_candidates,
-            transcript_map,
             comments_map,
-            cfg["analyze_n"],
+            min(int(cfg["analyze_n"]), MAX_VIDEO_EVIDENCE_SOURCES),
+            max_total_minutes=MAX_VIDEO_EVIDENCE_MINUTES,
+            max_single_minutes=MAX_SINGLE_VIDEO_MINUTES,
         )
+        selected_videos = evidence_selection["videos"]
         result["pool"] = all_videos
         result["market_coverage"] = coverage
         result["rising_signals"] = rising_signals
@@ -854,28 +909,23 @@ def run_pipeline(
         packets = [
             _video_packet(
                 video,
-                transcript_map.get(video["id"], []),
                 comments_map.get(video["id"], []),
             )
             for video in selected_videos
-        ]
-        result["evidence_stats"] = [
-            {
-                "video_id": video["id"],
-                "transcript_segments": len(transcript_map.get(video["id"], [])),
-                "comments_collected": len(comments_map.get(video["id"], [])),
-                "comments_sent": len(packet.get("comments", [])),
-                "source_quality": packet.get("source_quality", ""),
-            }
-            for video, packet in zip(selected_videos, packets)
         ]
         result["collection_stats"].update(
             {
                 "evidence_candidates_checked": len(evidence_candidates),
                 "evidence_videos_analyzed": len(selected_videos),
-                "transcript_segments": sum(
-                    len(transcript_map.get(video["id"], []))
-                    for video in selected_videos
+                "video_input_sources": len(evidence_selection["video_input_ids"]),
+                "video_fallback_sources": len(evidence_selection["fallback_ids"]),
+                "video_input_minutes": evidence_selection["total_video_minutes"],
+                "video_input_minutes_max": evidence_selection["max_total_minutes"],
+                "single_video_minutes_max": evidence_selection[
+                    "max_single_minutes"
+                ],
+                "standard_analysis_cost_ceiling_twd": (
+                    STANDARD_ANALYSIS_COST_CEILING_TWD
                 ),
                 "comments_collected": sum(
                     len(comments_map.get(video["id"], [])) for video in selected_videos
@@ -885,7 +935,7 @@ def run_pipeline(
                 ),
             }
         )
-        breakdowns = _analyze_packets(
+        breakdowns, provider_stats = _analyze_packets(
             gemini,
             ledger,
             cache,
@@ -893,11 +943,30 @@ def run_pipeline(
             packets,
         )
         result["breakdowns"] = breakdowns
+        result["video_evidence_provider"] = provider_stats
+        result["evidence_stats"] = [
+            {
+                "video_id": video["id"],
+                "duration_min": video.get("duration_min", 0),
+                "video_content_requested": bool(
+                    video.get("video_content_enabled")
+                ),
+                "comments_collected": len(comments_map.get(video["id"], [])),
+                "comments_sent": len(packet.get("comments", [])),
+                "source_quality": breakdown.get(
+                    "_source_quality", "metadata_and_comments_only"
+                ),
+            }
+            for video, packet, breakdown in zip(
+                selected_videos, packets, breakdowns
+            )
+        ]
 
         progress.update(
             "正在整理切角…",
             f"已從 {len(evidence_candidates)} 支候選中補位選出 "
-            f"{len(selected_videos)} 支可用證據影片。",
+            f"{len(selected_videos)} 支證據來源；"
+            f"影音輸入共 {evidence_selection['total_video_minutes']:.1f} 分鐘。",
         )
         compact_comments = {
             packet["video_id"]: packet.get("comments", []) for packet in packets
@@ -1071,7 +1140,9 @@ with st.sidebar:
             N_EN = st.slider("英文查詢數", 1, MAX_FIRST_ROUND_EN, 2)
             N_ZH = st.slider("中文查詢數", 2, MAX_FIRST_ROUND_ZH, 4)
             PER_KW = st.slider("每組候選數", 15, 40, 25)
-            ANALYZE_N = st.slider("證據分析影片數", 5, 10, 8)
+            ANALYZE_N = st.slider(
+                "證據分析影片數", 5, MAX_VIDEO_EVIDENCE_SOURCES, 8
+            )
             WINDOW_DAYS = st.select_slider(
                 "內容時間範圍", options=[30, 90, 180, 365], value=180
             )
@@ -1214,11 +1285,26 @@ if run_clicked:
         st.error("請先設定 Gemini 與 YouTube API Key")
     else:
         code = st.session_state.get("_wl_code", "")
+        usage_request_id = str(uuid4())
+        request_fingerprint = stable_hash(
+            [code, topic.strip(), exclusions.strip(), references.strip()]
+        )
+        recent_failure = st.session_state.get("recent_analysis_failure", {})
+        cooldown_active = bool(
+            recent_failure.get("fingerprint") == request_fingerprint
+            and time.time() - float(recent_failure.get("failed_at", 0) or 0) < 600
+        )
         consumed = False
         quota_required = usage_quota_required(_wl_enabled(), is_admin)
-        may_run = not quota_required
-        if quota_required:
-            response = _wl_api("consume", code)
+        may_run = not quota_required and not cooldown_active
+        if cooldown_active:
+            st.warning(
+                "同一題目剛才已在終點失敗；為避免重複產生成本，請 10 分鐘後再試。"
+            )
+        elif quota_required:
+            response = _wl_api(
+                "consume", code, {"request_id": usage_request_id}
+            )
             if response.get("ok"):
                 consumed = True
                 may_run = True
@@ -1228,7 +1314,6 @@ if run_clicked:
             else:
                 st.error(_WL_ERR.get(response.get("error", ""), "額度不足或服務異常"))
         if may_run:
-            usage_request_id = str(uuid4())
             usage_started_at = datetime.now().astimezone()
             usage_started_clock = time.monotonic()
             config = {
@@ -1254,6 +1339,7 @@ if run_clicked:
                 )
                 pipeline_result["request_id"] = usage_request_id
                 st.session_state["radar_result"] = pipeline_result
+                st.session_state.pop("recent_analysis_failure", None)
                 _log_whitelist_usage(
                     code=code,
                     request_id=usage_request_id,
@@ -1273,7 +1359,9 @@ if run_clicked:
                     st.error("這次分析沒有完成，請稍後再試。")
                 refunded = False
                 if consumed:
-                    refund = _wl_api("refund", code)
+                    refund = _wl_api(
+                        "refund", code, {"request_id": usage_request_id}
+                    )
                     if refund.get("ok"):
                         refunded = True
                         st.session_state["_wl_remaining"] = int(
@@ -1282,6 +1370,10 @@ if run_clicked:
                         st.info("這次沒有完成，已退還使用次數。")
                     else:
                         st.warning("使用次數暫時無法自動退回，請聯絡站主處理。")
+                st.session_state["recent_analysis_failure"] = {
+                    "fingerprint": request_fingerprint,
+                    "failed_at": time.time(),
+                }
                 _log_whitelist_usage(
                     code=code,
                     request_id=usage_request_id,
@@ -1490,6 +1582,11 @@ if "radar_result" in st.session_state:
             "推估 Gemini 成本", f"NT${usage.get('estimated_twd', 0):.2f}"
         )
         st.caption(f"價格基準日 {usage.get('pricing_date', '—')}；估算不等同實際帳單。")
+        if float(usage.get("estimated_twd", 0) or 0) > STANDARD_ANALYSIS_COST_CEILING_TWD:
+            st.warning(
+                f"本次成本超過內部 NT${STANDARD_ANALYSIS_COST_CEILING_TWD:.2f} "
+                "護欄，請檢查影片長度、fallback 或模型路由。"
+            )
 
         with st.expander("模型使用明細"):
             usage_rows = usage.get("records", [])
@@ -1513,6 +1610,7 @@ if "radar_result" in st.session_state:
         with st.expander("樣本與影片評分"):
             st.json(result.get("market_coverage", {}))
             st.json({"rising_signals": result.get("rising_signals", [])})
+            st.json({"video_evidence_provider": result.get("video_evidence_provider", {})})
             evidence_stats = {
                 item.get("video_id", ""): item
                 for item in result.get("evidence_stats", [])
@@ -1529,8 +1627,14 @@ if "radar_result" in st.session_state:
                     "證據分": video.get("evidence_score"),
                     "命中搜尋詞數": len(video.get("keyword_hits", [])),
                     "已分析": video.get("id") in result.get("analyzed_ids", []),
-                    "字幕段數": evidence_stats.get(video.get("id", ""), {}).get(
-                        "transcript_segments", 0
+                    "影片分鐘": evidence_stats.get(video.get("id", ""), {}).get(
+                        "duration_min", video.get("duration_min", 0)
+                    ),
+                    "影片內容輸入": evidence_stats.get(video.get("id", ""), {}).get(
+                        "video_content_requested", False
+                    ),
+                    "證據來源品質": evidence_stats.get(video.get("id", ""), {}).get(
+                        "source_quality", ""
                     ),
                     "留言抓取": evidence_stats.get(video.get("id", ""), {}).get(
                         "comments_collected", 0
