@@ -49,6 +49,24 @@ streamlit run app.py
 
 API 金鑰只應放在 Streamlit Secrets，不能提交進 GitHub。公開部署請勿開啟 `SHOW_ADMIN_DIAGNOSTICS`；本機需要診斷時才設為 `true`。
 
+### 管理者：YouTube CC／影音 token 單次實測
+
+公開版提供一個不影響一般分析、也不扣白名單額度的管理者 probe，用來確認
+Gemini 收到公開 YouTube URL 時，token 用量較像既有 CC／文字，還是完整影音：
+
+1. 以 `ADMIN_CODE` 登入；本機也可暫時設定 `SHOW_ADMIN_DIAGNOSTICS = true`。
+2. 在側欄展開「YouTube CC／Token 單次實測」。
+3. 貼上一支你已確認有 CC 的公開影片，先選 `gemini-3.1-flash-lite`。
+4. 按「執行一次實測」。工具只呼叫一次 `countTokens` 和一次低解析生成，且不要求完整字幕。
+5. 比較 `實際 Input tokens`、`低解析影音基準` 與 `prompt_tokens_details`：
+   - 明細出現 `audio`／`video`，代表 API 有計入影音 token。
+   - token 遠低於低解析基準且明細只有 `text`，才可暫時判斷較像 CC／文字路徑。
+6. 最後仍以 Gemini `usage_metadata` 和 Google Cloud Billing 帳單確認實際費用。
+
+這是 Preview 行為的診斷，不是 Google 對「有 CC 就只讀字幕」的永久保證。若
+Flash-Lite 回報不支援 YouTube URL，可再用選單中的 `gemini-3.6-flash` 測一次，
+但後者單價較高。
+
 ## 白名單與試用次數
 
 白名單由私有 Google Sheet 與 Apps Script 管理。Sheet 的必要欄位：

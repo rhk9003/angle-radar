@@ -10,16 +10,25 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
-# 2026-07-20 Gemini Developer API Standard 價格，單位 USD / 1M tokens。
+# 2026-07-22 Gemini Developer API Standard 價格，單位 USD / 1M tokens。
 # 未列出的模型仍會追蹤 token，只是不顯示成本。
 MODEL_PRICING = {
-    "gemini-3.1-flash-lite": {"input": 0.25, "output": 1.50, "cached": 0.025},
+    "gemini-3.1-flash-lite": {
+        "input": 0.25,
+        "input_audio": 0.50,
+        "output": 1.50,
+        "cached": 0.025,
+    },
+    "gemini-3.6-flash": {"input": 1.50, "output": 7.50, "cached": 0.15},
     "gemini-3.5-flash": {"input": 1.50, "output": 9.00, "cached": 0.15},
     "gemini-3-flash-preview": {"input": 0.50, "output": 3.00, "cached": 0.05},
     "gemini-3.1-pro-preview": {"input": 2.00, "output": 12.00, "cached": 0.20},
     "gemini-2.5-flash": {"input": 0.30, "output": 2.50, "cached": 0.03},
     "gemini-2.5-pro": {"input": 1.25, "output": 10.00, "cached": 0.125},
 }
+
+YOUTUBE_LOW_MEDIA_TOKENS_PER_SECOND = 98
+YOUTUBE_DEFAULT_MEDIA_TOKENS_PER_SECOND = 290
 
 
 @dataclass
@@ -43,6 +52,138 @@ def _read_value(value: Any, *names: str) -> int:
         if found is not None:
             return int(found or 0)
     return 0
+
+
+def _read_collection(value: Any, *names: str) -> list[Any]:
+    for name in names:
+        if isinstance(value, dict) and value.get(name) is not None:
+            return list(value[name] or [])
+        found = getattr(value, name, None)
+        if found is not None:
+            return list(found or [])
+    return []
+
+
+def _modality_name(value: Any) -> str:
+    raw = getattr(value, "value", None) or getattr(value, "name", None) or value
+    return str(raw or "unknown").split(".")[-1].lower()
+
+
+def usage_metadata_snapshot(usage: Any) -> dict[str, Any]:
+    """只保留可公開診斷的 token 數字，不序列化 provider 內部物件。"""
+    detail_rows = []
+    for detail in _read_collection(
+        usage, "prompt_tokens_details", "promptTokensDetails"
+    ):
+        modality = (
+            detail.get("modality") if isinstance(detail, dict) else None
+        ) or getattr(detail, "modality", None)
+        detail_rows.append(
+            {
+                "modality": _modality_name(modality),
+                "tokens": _read_value(detail, "token_count", "tokenCount"),
+            }
+        )
+    return {
+        "prompt_token_count": _read_value(
+            usage, "prompt_token_count", "promptTokenCount"
+        ),
+        "candidates_token_count": _read_value(
+            usage, "candidates_token_count", "candidatesTokenCount"
+        ),
+        "thoughts_token_count": _read_value(
+            usage, "thoughts_token_count", "thoughtsTokenCount"
+        ),
+        "cached_content_token_count": _read_value(
+            usage, "cached_content_token_count", "cachedContentTokenCount"
+        ),
+        "total_token_count": _read_value(
+            usage, "total_token_count", "totalTokenCount"
+        ),
+        "prompt_tokens_details": detail_rows,
+    }
+
+
+def estimate_probe_cost(
+    model: str, usage_snapshot: dict[str, Any], usd_to_twd: float = 32.21
+) -> dict[str, float]:
+    """依 modality 明細估算一次 probe；沒有明細時退回一般 input 價。"""
+    pricing = MODEL_PRICING.get(model, {})
+    details = usage_snapshot.get("prompt_tokens_details", [])
+    detailed_tokens = sum(int(row.get("tokens", 0) or 0) for row in details)
+    input_usd = 0.0
+    if detailed_tokens:
+        for row in details:
+            modality = str(row.get("modality", "")).lower()
+            rate = float(
+                pricing.get(
+                    "input_audio" if modality == "audio" else "input",
+                    pricing.get("input", 0),
+                )
+            )
+            input_usd += int(row.get("tokens", 0) or 0) * rate / 1_000_000
+        unclassified = max(
+            int(usage_snapshot.get("prompt_token_count", 0) or 0) - detailed_tokens,
+            0,
+        )
+        input_usd += unclassified * float(pricing.get("input", 0)) / 1_000_000
+    else:
+        input_usd = (
+            int(usage_snapshot.get("prompt_token_count", 0) or 0)
+            * float(pricing.get("input", 0))
+            / 1_000_000
+        )
+    output_tokens = int(usage_snapshot.get("candidates_token_count", 0) or 0) + int(
+        usage_snapshot.get("thoughts_token_count", 0) or 0
+    )
+    output_usd = output_tokens * float(pricing.get("output", 0)) / 1_000_000
+    total_usd = input_usd + output_usd
+    return {
+        "input_usd": round(input_usd, 6),
+        "output_usd": round(output_usd, 6),
+        "total_usd": round(total_usd, 6),
+        "total_twd": round(total_usd * usd_to_twd, 2),
+    }
+
+
+def classify_youtube_input_route(
+    *, prompt_tokens: int, token_details: list[dict[str, Any]], duration_seconds: int
+) -> dict[str, Any]:
+    """比較實際 token 與官方影音基準；結果只是假說，不宣稱 provider 內部實作。"""
+    expected_low = max(duration_seconds, 0) * YOUTUBE_LOW_MEDIA_TOKENS_PER_SECOND
+    expected_default = (
+        max(duration_seconds, 0) * YOUTUBE_DEFAULT_MEDIA_TOKENS_PER_SECOND
+    )
+    media_tokens = sum(
+        int(row.get("tokens", 0) or 0)
+        for row in token_details
+        if str(row.get("modality", "")).lower() in {"audio", "video"}
+    )
+    if media_tokens:
+        verdict = "usage_metadata 顯示 audio／video tokens，較像影音處理路徑。"
+        route = "media_tokens_reported"
+    elif expected_low and prompt_tokens < expected_low * 0.35:
+        verdict = (
+            "Input tokens 遠低於低解析影音基準，較像 CC／文字路徑；"
+            "仍需以 Cloud Billing 確認。"
+        )
+        route = "cc_or_text_likely"
+    else:
+        verdict = "目前證據不足以判定 CC 或影音路徑，請查看 modality 與帳單。"
+        route = "undetermined"
+    return {
+        "route": route,
+        "verdict": verdict,
+        "duration_seconds": duration_seconds,
+        "expected_low_media_tokens": expected_low,
+        "expected_default_media_tokens": expected_default,
+        "actual_to_low_ratio": round(prompt_tokens / expected_low, 3)
+        if expected_low
+        else None,
+        "actual_to_default_ratio": round(prompt_tokens / expected_default, 3)
+        if expected_default
+        else None,
+    }
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
@@ -314,3 +455,62 @@ class GeminiClient:
     def count_tokens(self, model: str, contents: Any) -> int:
         response = self._client.models.count_tokens(model=model, contents=contents)
         return _read_value(response, "total_tokens", "total_token_count")
+
+    def probe_youtube_url(
+        self,
+        *,
+        youtube_url: str,
+        model: str,
+        prompt: str,
+        schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        """單次低解析 YouTube URL 實測；不重試，避免診斷意外多次計費。"""
+        contents = self._types.Content(
+            parts=[
+                self._types.Part(
+                    file_data=self._types.FileData(file_uri=youtube_url)
+                ),
+                self._types.Part(text=prompt),
+            ]
+        )
+        count_tokens = 0
+        count_tokens_error = ""
+        try:
+            count_response = self._client.models.count_tokens(
+                model=model, contents=contents
+            )
+            count_tokens = _read_value(
+                count_response, "total_tokens", "total_token_count"
+            )
+        except Exception as exc:  # countTokens preview 支援可能落後 generateContent
+            count_tokens_error = str(exc)[:300]
+
+        response = self._client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=self._config(
+                max_output_tokens=800,
+                temperature=0.0,
+                thinking_level=None,
+                schema=schema,
+                media_resolution_low=True,
+            ),
+        )
+        usage = getattr(response, "usage_metadata", {})
+        self._ledger.record("YouTube CC／影音 token 實測", model, usage)
+        parsed = getattr(response, "parsed", None)
+        if isinstance(parsed, dict):
+            analysis = parsed
+        elif parsed is not None and hasattr(parsed, "model_dump"):
+            analysis = parsed.model_dump()
+        else:
+            analysis = _parse_json_object(getattr(response, "text", "") or "")
+        snapshot = usage_metadata_snapshot(usage)
+        return {
+            "model": model,
+            "count_tokens": count_tokens,
+            "count_tokens_error": count_tokens_error,
+            "usage": snapshot,
+            "estimated_cost": estimate_probe_cost(model, snapshot),
+            "analysis": analysis,
+        }
