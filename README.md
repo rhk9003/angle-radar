@@ -72,7 +72,7 @@ API 金鑰只應放在 Streamlit Secrets，不能提交進 GitHub。公開部署
 - 相關性檢查最多送入 180 支候選
 - 回流候選最多 48 個；證據探測最多 12 支；深度分析預設 8 支
 - 每支留言只取 relevance 與 time 各一頁，每頁 40 則，壓成最多 12 則代表樣本
-- 關鍵字、相關性、資料回流與影片拆解交給 `gemini-2.5-flash-lite`，且不主動開啟 thinking
+- 關鍵字、相關性、資料回流與影片拆解交給 `gemini-3.1-flash-lite`，且不主動開啟 thinking
 - 跨來源歸納使用 `gemini-3.1-flash-lite`；最終卡片預設使用 `gemini-3-flash-preview`
 - 只有最終卡片缺漏、證據不足、內容重複或生成失敗時，才由 `gemini-3.5-flash` 補救
 - 最終固定產出 4–6 張不同的行動卡，但不固定湊滿搬運、留言或熱點等分類
