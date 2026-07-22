@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import importlib
 import json
 import logging
 import time
@@ -16,11 +17,16 @@ import streamlit as st
 from st_copy import copy_button
 
 from cache_store import JsonTTLCache
-from llm_client import (
-    GeminiClient,
-    UsageLedger,
-    classify_youtube_input_route,
-)
+import llm_client as _llm_client
+
+# Streamlit Cloud may rerun app.py while retaining an older imported module.
+# Reload once when a newly deployed symbol is missing so multi-file updates stay atomic.
+if not hasattr(_llm_client, "classify_youtube_input_route"):
+    _llm_client = importlib.reload(_llm_client)
+
+GeminiClient = _llm_client.GeminiClient
+UsageLedger = _llm_client.UsageLedger
+classify_youtube_input_route = _llm_client.classify_youtube_input_route
 from radar_core import (
     MARKET_LABEL,
     attach_outlier_metrics_v2,
