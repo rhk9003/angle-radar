@@ -63,7 +63,7 @@ from youtube_data import YouTubeData
 
 st.set_page_config(page_title="切角雷達", layout="wide")
 
-DEFAULT_MECHANICAL_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_MECHANICAL_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_SYNTHESIS_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_REPORT_MODEL = "gemini-3-flash-preview"
 DEFAULT_REPORT_FALLBACK_MODEL = "gemini-3.5-flash"
