@@ -232,46 +232,25 @@ strong{font-weight:600;color:var(--ink)}
 .duty__col li::before{content:"—";position:absolute;left:0;top:11px;color:var(--accent)}
 .duty__col li b{font-weight:600;color:var(--ink);font-variant-numeric:lining-nums}
 
-/* ============ 成品卡 ============ */
-.card{
-  max-width:var(--maxw-narrow);margin:clamp(34px,5vw,52px) auto 0;
+/* ============ 成果大框 ============ */
+.gets{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:18px;
+  max-width:1000px;margin:clamp(34px,5vw,54px) auto 0;
+}
+.get{
   background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);
-  box-shadow:inset 0 3px 0 0 var(--navy);
-  padding:clamp(26px,3.4vw,44px) clamp(22px,3.4vw,44px) clamp(18px,2.4vw,30px);
+  box-shadow:inset 0 3px 0 0 var(--navy);min-width:0;
+  padding:clamp(28px,3.2vw,42px) clamp(22px,2.6vw,34px) clamp(30px,3.4vw,46px);
 }
-.card__head{display:flex;align-items:center;justify-content:space-between;gap:16px}
-.card__chip{
-  flex:none;font-size:.78rem;font-weight:600;letter-spacing:.1em;
-  color:var(--accent);border:1px solid rgba(233,69,96,.35);
-  border-radius:999px;padding:4px 13px;margin-top:5px;white-space:nowrap;
+.get__n{
+  font-size:1rem;color:var(--accent);font-weight:600;letter-spacing:.05em;
+  font-variant-numeric:lining-nums;
 }
-.card__src{
-  font-size:var(--fs-eyebrow);letter-spacing:.22em;text-transform:uppercase;
-  color:var(--mute);margin:8px 0 18px;
+.get h3{
+  font-size:clamp(1.3rem,2.1vw,1.6rem);line-height:1.45;
+  margin-top:clamp(12px,1.6vw,18px);
 }
-.row{padding:15px 0;border-top:1px solid var(--line-soft)}
-.row .lb{
-  display:block;font-size:var(--fs-small);font-weight:600;
-  letter-spacing:.06em;color:var(--slate);margin-bottom:3px;
-}
-.row p{color:var(--ink)}
-.row.avoid .lb{color:var(--accent)}
-.row.quote{padding-left:22px;border-left:3px solid var(--accent);margin:15px 0}
-.ghost{
-  display:block;height:11px;border-radius:99px;margin-top:10px;
-  background:linear-gradient(90deg,#e7e9f0,#f2f3f7);
-}
-.ghost--title{height:16px;flex:1;max-width:68%;margin-top:0}
-.ghost--quote{height:13px}
-.row.more{
-  font-size:var(--fs-small);color:var(--slate);font-weight:600;letter-spacing:.04em;
-}
-.row.more .plus{color:var(--accent)}
-.card-note{
-  max-width:var(--maxw-narrow);margin:clamp(20px,2.4vw,30px) auto 0;
-  text-align:center;font-size:var(--fs-small);color:var(--slate);
-}
-.card-note b{color:var(--ink);font-weight:600}
+.get p{margin-top:10px;font-size:var(--fs-small);color:var(--slate);line-height:1.8}
 
 /* ============ 定價（紅染色塊板） ============ */
 .plan{
@@ -371,6 +350,7 @@ strong{font-weight:600;color:var(--ink)}
   .nav__menu{display:none}
   .duty{grid-template-columns:1fr}
   .duty__col--you{border-right:0;border-bottom:1px solid var(--line)}
+  .gets{grid-template-columns:1fr;max-width:520px}
 }
 @media (max-width:520px){
   :root{--gutter:20px;--sec-y:clamp(52px,12vw,80px)}
@@ -383,8 +363,6 @@ strong{font-weight:600;color:var(--ink)}
   .board{padding:22px 20px}
   .chore{grid-template-columns:auto 1fr}
   .chore__me{grid-column:2;justify-self:start}
-  .card__head{flex-direction:column;gap:8px}
-  .card__chip{margin-top:0}
 }
 @media (prefers-reduced-motion:reduce){
   html{scroll-behavior:auto}
@@ -495,31 +473,26 @@ strong{font-weight:600;color:var(--ink)}
     <div class="head">
       <span class="eyebrow">What You Get</span>
       <span class="num">03</span>
-      <h2>不是報告，是照著開拍的卡</h2>
+      <h2>一次分析，你能達到</h2>
     </div>
 
-    <article class="card" aria-label="切角卡版型示意">
-      <div class="card__head">
-        <span class="ghost ghost--title" aria-hidden="true"></span>
-        <span class="card__chip">切角類型</span>
+    <div class="gets">
+      <div class="get">
+        <span class="get__n">01</span>
+        <h3>拿了就能開拍</h3>
+        <p>4–6 個切角，含核心訊息、可照念的開場</p>
       </div>
-      <p class="card__src">Card Layout · 每次分析產出 4–6 張</p>
-      <div class="row">
-        <span class="lb">你可以拍</span>
-        <span class="ghost" style="width:88%" aria-hidden="true"></span>
+      <div class="get">
+        <span class="get__n">02</span>
+        <h3>研究的夜晚省下來</h3>
+        <p>海內外影片我看完，值得看的列成清單給你</p>
       </div>
-      <div class="row">
-        <span class="lb">這支真正要講</span>
-        <span class="ghost" style="width:62%" aria-hidden="true"></span>
+      <div class="get">
+        <span class="get__n">03</span>
+        <h3>接上你慣用的 AI</h3>
+        <p>每個切角附深化 Prompt，直接發展成腳本</p>
       </div>
-      <div class="row quote">
-        <span class="lb">開場可以直接說</span>
-        <span class="ghost ghost--quote" style="width:76%" aria-hidden="true"></span>
-      </div>
-      <div class="row more"><span class="plus">＋</span> 展開還有：建議拍法、拉開差異、不要拍成、來源影片</div>
-    </article>
-
-    <p class="card-note">每張卡另附<b>深化 Prompt</b>，帶回你慣用的 AI 繼續發展成腳本。</p>
+    </div>
   </div>
 </section>
 
