@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>切角雷達 Angle Radar｜給影音創作者的選題研究工具</title>
+<meta name="description" content="輸入一句「想拍什麼」，切角雷達實際掃描國內外熱門影片、字幕與觀眾留言，給你 4–6 張能直接開拍的切角行動卡，每一張都附得出來源。">
+<meta property="og:title" content="切角雷達 Angle Radar">
+<meta property="og:description" content="一句「想拍什麼」，換成 4–6 個能直接開拍的切角。每一張卡都附得出來源——不是 AI 憑空想像。">
+<meta property="og:type" content="website">
+<style>
+/* ============ 夜間雷達儀表 · Design tokens ============ */
+:root{
+  --ink:#0C1618;        /* 墨綠黑地 */
+  --ink-2:#122023;      /* 浮起表面 */
+  --ink-3:#16282B;      /* 更亮一階 */
+  --line:#24393C;       /* 帶色相的邊線 */
+  --text:#E9F2EE;       /* 紙綠白 */
+  --muted:#9DB5AD;      /* 靛灰綠 */
+  --phos:#58DFA3;       /* 磷光綠：掃描與證據 */
+  --phos-dim:rgba(88,223,163,.14);
+  --amber:#F2B24C;      /* 訊號琥珀：行動 */
+  --alert:#E5715F;      /* 避雷用，極少量 */
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:system-ui,-apple-system,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:var(--ink);color:var(--text);
+  font-family:var(--sans);font-size:17px;line-height:1.75;
+  -webkit-font-smoothing:antialiased;
+}
+::selection{background:var(--phos);color:var(--ink)}
+a{color:inherit}
+img{max-width:100%}
+.wrap{max-width:1040px;margin:0 auto;padding:0 24px}
+section{padding:88px 0}
+h1,h2,h3{text-wrap:balance;line-height:1.3}
+
+/* ---- 儀表刻度（區塊眉標） ---- */
+.brg{
+  display:flex;align-items:center;gap:14px;
+  font-family:var(--mono);font-size:12.5px;letter-spacing:.14em;
+  color:var(--phos);margin-bottom:22px;
+}
+.brg::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent)}
+.brg b{font-weight:400;color:var(--muted)}
+
+/* ---- 按鈕 ---- */
+.btn{
+  display:inline-block;padding:13px 26px;border-radius:6px;
+  font-weight:700;font-size:16px;text-decoration:none;
+  border:1px solid transparent;transition:transform .15s,box-shadow .15s;
+}
+.btn:focus-visible{outline:2px solid var(--phos);outline-offset:3px}
+.btn-amber{background:var(--amber);color:#1E1503}
+.btn-amber:hover{transform:translateY(-1px);box-shadow:0 6px 24px rgba(242,178,76,.25)}
+.btn-ghost{border-color:var(--line);color:var(--text)}
+.btn-ghost:hover{border-color:var(--phos);color:var(--phos)}
+
+/* ============ HERO ============ */
+.hero{padding:72px 0 64px;position:relative;overflow:hidden}
+.hero .wrap{display:flex;align-items:center;gap:48px}
+.hero-copy{flex:1.2;min-width:0}
+.hero-eyebrow{
+  font-family:var(--mono);font-size:13px;letter-spacing:.18em;
+  color:var(--phos);margin-bottom:26px;
+}
+.hero-eyebrow .beta{
+  margin-left:12px;padding:3px 10px;border:1px solid var(--line);
+  border-radius:99px;color:var(--amber);font-size:11.5px;letter-spacing:.1em;
+}
+.hero h1{
+  font-size:clamp(30px,4.6vw,46px);font-weight:900;letter-spacing:.01em;
+}
+.hero h1 em{font-style:normal;color:var(--phos)}
+.hero .sub{
+  margin-top:22px;max-width:34em;color:var(--muted);font-size:18px;
+}
+.hero .sub strong{color:var(--text);font-weight:600}
+.hero .cta-row{margin-top:34px;display:flex;gap:14px;flex-wrap:wrap}
+.hero .stats{
+  margin-top:44px;display:flex;flex-wrap:wrap;gap:10px 28px;
+  font-family:var(--mono);font-size:12.5px;letter-spacing:.06em;color:var(--muted);
+}
+.hero .stats span b{color:var(--phos);font-weight:400}
+
+/* ---- 雷達掃描儀 ---- */
+.scope-box{flex:1;display:flex;justify-content:center;min-width:0}
+.scope{
+  position:relative;width:min(360px,72vw);aspect-ratio:1;border-radius:50%;
+  border:1px solid var(--line);
+  background:radial-gradient(circle,rgba(88,223,163,.07),rgba(12,22,24,0) 70%);
+  overflow:hidden;flex:none;
+}
+.scope .ring{position:absolute;border:1px solid var(--phos-dim);border-radius:50%}
+.scope .r1{inset:12.5%}.scope .r2{inset:25%}.scope .r3{inset:37.5%}
+.scope .axis{position:absolute;background:var(--phos-dim)}
+.scope .ax-v{left:50%;top:0;width:1px;height:100%}
+.scope .ax-h{top:50%;left:0;height:1px;width:100%}
+.scope .sweep{
+  position:absolute;inset:0;border-radius:50%;
+  background:conic-gradient(from 0deg,rgba(88,223,163,.5),rgba(88,223,163,.08) 16%,transparent 24%);
+  animation:sweep 6s linear infinite;
+}
+.scope .dot{
+  position:absolute;width:7px;height:7px;border-radius:50%;
+  background:var(--phos);opacity:.25;animation:blip 6s linear infinite;
+}
+.scope .d1{top:26%;left:62%;animation-delay:1.4s}
+.scope .d2{top:58%;left:73%;animation-delay:2.1s}
+.scope .d3{top:70%;left:34%;animation-delay:3.6s}
+.scope .d4{top:38%;left:22%;animation-delay:4.9s}
+.scope .core{
+  position:absolute;top:50%;left:50%;width:6px;height:6px;margin:-3px;
+  border-radius:50%;background:var(--phos);
+}
+.scope .tick{
+  position:absolute;font-family:var(--mono);font-size:10.5px;
+  letter-spacing:.1em;color:var(--muted);
+}
+.scope .t0{top:8px;left:50%;transform:translateX(-50%)}
+.scope .t90{right:10px;top:50%;transform:translateY(-50%)}
+.scope .t180{bottom:8px;left:50%;transform:translateX(-50%)}
+.scope .t270{left:10px;top:50%;transform:translateY(-50%)}
+@keyframes sweep{to{transform:rotate(360deg)}}
+@keyframes blip{
+  0%,100%{opacity:.18;box-shadow:none}
+  8%{opacity:1;box-shadow:0 0 14px 3px rgba(88,223,163,.5)}
+  30%{opacity:.3}
+}
+@media (prefers-reduced-motion:reduce){
+  .scope .sweep{animation:none;opacity:.35}
+  .scope .dot{animation:none;opacity:.7}
+  html{scroll-behavior:auto}
+}
+
+/* ============ 痛點 ============ */
+.pain h2,.how h2,.sample h2,.versus h2,.pricing h2{
+  font-size:clamp(24px,3.2vw,32px);font-weight:800;margin-bottom:16px;
+}
+.pain-lede{color:var(--muted);max-width:38em}
+.pain-grid{
+  margin-top:40px;display:grid;grid-template-columns:repeat(3,1fr);gap:18px;
+}
+.pain-card{
+  background:var(--ink-2);border:1px solid var(--line);border-radius:10px;
+  padding:26px 24px;
+}
+.pain-card .k{
+  font-family:var(--mono);font-size:12px;letter-spacing:.12em;
+  color:var(--muted);display:block;margin-bottom:12px;
+}
+.pain-card h3{font-size:18.5px;margin-bottom:10px}
+.pain-card p{color:var(--muted);font-size:15.5px}
+.pain-turn{
+  margin-top:44px;font-size:clamp(20px,2.6vw,26px);font-weight:800;
+}
+.pain-turn em{font-style:normal;color:var(--phos)}
+
+/* ============ 運作方式 ============ */
+.how-list{margin-top:36px;display:grid;gap:0}
+.how-step{
+  display:grid;grid-template-columns:64px 1fr;gap:22px;
+  padding:28px 0;border-top:1px solid var(--line);
+}
+.how-step:last-child{border-bottom:1px solid var(--line)}
+.how-step .n{
+  font-family:var(--mono);font-size:13px;color:var(--phos);
+  letter-spacing:.1em;padding-top:5px;
+}
+.how-step h3{font-size:19px;margin-bottom:8px}
+.how-step p{color:var(--muted);max-width:44em}
+.how-step p b{color:var(--text);font-weight:600}
+
+/* ============ 成品示意卡 ============ */
+.sample-lede{color:var(--muted);max-width:40em}
+.card{
+  margin-top:40px;background:var(--ink-2);border:1px solid var(--line);
+  border-radius:12px;padding:34px 34px 26px;
+  box-shadow:0 18px 60px rgba(0,0,0,.35);
+}
+.card-head{
+  display:flex;align-items:flex-start;justify-content:space-between;
+  gap:16px;margin-bottom:6px;
+}
+.card-head h3{font-size:clamp(19px,2.4vw,23px);font-weight:800}
+.chip{
+  flex:none;font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;
+  color:var(--phos);border:1px solid var(--phos-dim);
+  background:rgba(88,223,163,.06);border-radius:99px;padding:5px 12px;
+  margin-top:3px;white-space:nowrap;
+}
+.card-src{
+  font-family:var(--mono);font-size:12px;color:var(--muted);
+  letter-spacing:.06em;margin-bottom:22px;
+}
+.row{padding:13px 0;border-top:1px solid rgba(36,57,60,.6);font-size:16px}
+.row .lb{
+  display:block;font-weight:700;color:var(--phos);font-size:14.5px;
+  margin-bottom:3px;letter-spacing:.02em;
+}
+.row.avoid .lb{color:var(--alert)}
+.row p{color:var(--text)}
+.row.quote p{
+  font-size:17.5px;font-weight:600;
+  border-left:3px solid var(--amber);padding-left:14px;
+}
+.card details{border-top:1px solid rgba(36,57,60,.6);margin-top:2px;padding:13px 0 4px}
+.card summary{
+  cursor:pointer;font-family:var(--mono);font-size:13px;
+  letter-spacing:.1em;color:var(--muted);list-style:none;
+}
+.card summary::before{content:"▸ ";color:var(--phos)}
+.card details[open] summary::before{content:"▾ "}
+.card details p{color:var(--muted);font-size:14.5px;margin-top:10px}
+.sample-note{
+  margin-top:22px;color:var(--muted);font-size:15px;max-width:44em;
+}
+.sample-note b{color:var(--text)}
+
+/* ============ 對照 ============ */
+.vs-grid{
+  margin-top:36px;display:grid;grid-template-columns:1fr 1fr;gap:18px;
+}
+.vs-col{border:1px solid var(--line);border-radius:10px;padding:26px 26px 14px}
+.vs-col h3{
+  font-family:var(--mono);font-size:13px;letter-spacing:.14em;
+  font-weight:400;margin-bottom:18px;
+}
+.vs-col ul{list-style:none}
+.vs-col li{
+  padding:12px 0 12px 26px;border-top:1px solid rgba(36,57,60,.5);
+  position:relative;font-size:15.5px;
+}
+.vs-col li::before{position:absolute;left:0;font-family:var(--mono)}
+.vs-them{background:transparent}
+.vs-them h3,.vs-them li{color:var(--muted)}
+.vs-them li::before{content:"✕";color:var(--alert);opacity:.8}
+.vs-us{background:var(--ink-2)}
+.vs-us h3{color:var(--phos)}
+.vs-us li::before{content:"●";color:var(--phos);font-size:11px;top:16px}
+.vs-tail{margin-top:26px;color:var(--muted);max-width:44em}
+.vs-tail b{color:var(--text)}
+
+/* ============ 定價 ============ */
+.price-card{
+  margin-top:36px;border:1px solid var(--line);border-radius:12px;
+  background:linear-gradient(180deg,var(--ink-3),var(--ink-2));
+  padding:38px;display:grid;grid-template-columns:auto 1fr;gap:40px;
+}
+.price-num .amt{font-size:52px;font-weight:900;line-height:1;letter-spacing:.01em}
+.price-num .amt small{font-size:18px;font-weight:600;color:var(--muted)}
+.price-num .quota{
+  margin-top:14px;font-family:var(--mono);font-size:13px;
+  color:var(--phos);letter-spacing:.08em;
+}
+.price-num .note{margin-top:6px;font-size:12.5px;color:var(--muted)}
+.price-inc h3{font-size:15px;letter-spacing:.04em;color:var(--muted);font-weight:600;margin-bottom:14px}
+.price-inc ul{list-style:none}
+.price-inc li{
+  padding:10px 0 10px 24px;position:relative;font-size:15.5px;
+  border-top:1px solid rgba(36,57,60,.5);
+}
+.price-inc li::before{content:"＋";position:absolute;left:0;color:var(--amber);font-family:var(--mono)}
+.price-cta{grid-column:1/-1;display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-top:6px}
+.price-cta .hint{font-size:14px;color:var(--muted)}
+
+/* ============ FAQ ============ */
+.faq h2{font-size:clamp(22px,3vw,28px);font-weight:800;margin-bottom:10px}
+.faq details{border-top:1px solid var(--line);padding:20px 0}
+.faq details:last-of-type{border-bottom:1px solid var(--line)}
+.faq summary{
+  cursor:pointer;font-size:17px;font-weight:700;list-style:none;
+  display:flex;gap:14px;align-items:baseline;
+}
+.faq summary::before{
+  content:"Q";font-family:var(--mono);color:var(--phos);
+  font-size:13px;letter-spacing:.1em;flex:none;
+}
+.faq details p{margin-top:12px;color:var(--muted);max-width:46em;padding-left:27px}
+.faq details p b{color:var(--text)}
+
+/* ============ 結尾 CTA ============ */
+.final{padding:110px 0;text-align:center;position:relative;overflow:hidden}
+.final::before{
+  content:"";position:absolute;inset:-40% -20%;pointer-events:none;
+  background:radial-gradient(ellipse at 50% 100%,rgba(88,223,163,.09),transparent 60%);
+}
+.final h2{font-size:clamp(26px,4vw,38px);font-weight:900}
+.final h2 em{font-style:normal;color:var(--phos)}
+.final p{margin-top:14px;color:var(--muted);font-size:18px}
+.final .cta-row{margin-top:34px;display:flex;justify-content:center;gap:14px}
+.final .tiny{margin-top:18px;font-size:13px;font-family:var(--mono);letter-spacing:.08em;color:var(--muted)}
+
+footer{
+  border-top:1px solid var(--line);padding:30px 0;
+  font-family:var(--mono);font-size:12.5px;letter-spacing:.08em;color:var(--muted);
+}
+footer .wrap{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+
+/* ============ RWD ============ */
+@media (max-width:880px){
+  section{padding:64px 0}
+  .hero .wrap{flex-direction:column;align-items:flex-start}
+  .scope-box{width:100%;order:2;margin-top:8px}
+  .pain-grid{grid-template-columns:1fr}
+  .vs-grid{grid-template-columns:1fr}
+  .price-card{grid-template-columns:1fr;gap:26px;padding:28px}
+  .how-step{grid-template-columns:1fr;gap:6px}
+  .card{padding:26px 22px 20px}
+}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <div class="hero-copy">
+      <div class="hero-eyebrow">切角雷達 ANGLE RADAR<span class="beta">邀請制內測中</span></div>
+      <h1>一句「想拍什麼」，<br>換成 4–6 個<em>能直接開拍</em>的切角</h1>
+      <p class="sub">切角雷達實際掃描國內外熱門影片、字幕與觀眾留言，找出還沒被拍爛的切角。<strong>每一張卡都附得出來源</strong>——不是 AI 憑空想像。</p>
+      <div class="cta-row">
+        <!-- TODO: 把 #cta 區的按鈕連結換成試用碼申請表單／LINE／IG -->
+        <a class="btn btn-amber" href="#cta">索取試用碼，免費體驗</a>
+        <a class="btn btn-ghost" href="#sample">先看一張成品卡</a>
+      </div>
+      <div class="stats">
+        <span><b>60</b> 支候選標題掃描</span>
+        <span><b>8</b> 支影片深度拆解</span>
+        <span><b>3</b> 層證據交叉驗證</span>
+        <span><b>4–6</b> 張行動卡</span>
+      </div>
+    </div>
+    <div class="scope-box" aria-hidden="true">
+      <div class="scope">
+        <div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>
+        <div class="axis ax-v"></div><div class="axis ax-h"></div>
+        <div class="sweep"></div>
+        <div class="dot d1"></div><div class="dot d2"></div><div class="dot d3"></div><div class="dot d4"></div>
+        <div class="core"></div>
+        <span class="tick t0">000</span><span class="tick t90">090</span>
+        <span class="tick t180">180</span><span class="tick t270">270</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ============ 痛點 ============ -->
+<section class="pain">
+  <div class="wrap">
+    <div class="brg">BRG 000°<b>／選題的現場</b></div>
+    <h2>選題，是創作裡最看不到盡頭的工</h2>
+    <p class="pain-lede">影片可以練、剪輯可以學，但選題永遠像在深夜大海撈針。</p>
+    <div class="pain-grid">
+      <div class="pain-card">
+        <span class="k">工序 1／爆肝看片</span>
+        <h3>連看 30 支同類型影片</h3>
+        <p>筆記越記越多，方向反而越模糊——每支都好像可以拍，又好像都被拍過了。</p>
+      </div>
+      <div class="pain-card">
+        <span class="k">工序 2／跨海找缺口</span>
+        <h3>聽說海外有還沒人做的題</h3>
+        <p>但搜尋、翻譯、一支一支比較，又是好幾個晚上，還不確定中文觀眾買不買單。</p>
+      </div>
+      <div class="pain-card">
+        <span class="k">工序 3／發布前心虛</span>
+        <h3>定了題，還是那句老話</h3>
+        <p>「這題是不是早就被拍爛了？」按下發布鍵之前，永遠少一份把握。</p>
+      </div>
+    </div>
+    <p class="pain-turn">這三件事，交給<em>切角雷達</em>。</p>
+  </div>
+</section>
+
+<!-- ============ 運作方式 ============ -->
+<section class="how">
+  <div class="wrap">
+    <div class="brg">BRG 090°<b>／雷達怎麼掃</b></div>
+    <h2>丟一個起點，剩下的交給雷達</h2>
+    <div class="how-list">
+      <div class="how-step">
+        <span class="n">STEP 1</span>
+        <div>
+          <h3>丟一個起點</h3>
+          <p>一句「想拍什麼」、一個你看到的影片標題，或直接貼 YouTube 連結。可以順便說<b>「不要什麼」</b>，例如：不要靈異故事。</p>
+        </div>
+      </div>
+      <div class="how-step">
+        <span class="n">STEP 2</span>
+        <div>
+          <h3>同時掃描三層證據</h3>
+          <p>觀眾在<b>搜</b>什麼（需求）、現有影片<b>做到哪</b>（供給）、留言區在<b>追問抱怨</b>什麼（缺口）——中文圈與海外內容一起比對，字幕和留言都實際讀過。</p>
+        </div>
+      </div>
+      <div class="how-step">
+        <span class="n">STEP 3</span>
+        <div>
+          <h3>收到你的行動卡</h3>
+          <p>4–6 張切角卡，每張都寫到<b>可以直接開拍</b>的程度——含選題、核心訊息、拍法、可照念的開場，以及來源與注意事項。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 成品示意 ============ -->
+<section class="sample" id="sample">
+  <div class="wrap">
+    <div class="brg">BRG 180°<b>／成品長這樣</b></div>
+    <h2>不是研究報告，是照著就能開拍的卡</h2>
+    <p class="sample-lede">以下是一張行動卡的示意（示範主題：「想成為命理師」）。真實報告會給你 4–6 張，各走不同方向。</p>
+
+    <article class="card">
+      <div class="card-head">
+        <h3>2. 第一次跟朋友收費，命理師都卡在那句話</h3>
+        <span class="chip">留言缺口</span>
+      </div>
+      <p class="card-src">示意範例 SAMPLE CARD</p>
+      <div class="row">
+        <span class="lb">你可以拍</span>
+        <p>用三個真實情境，示範從「免費幫看」走到「開口收費」的第一句話。</p>
+      </div>
+      <div class="row">
+        <span class="lb">這支真正要講</span>
+        <p>收費不是變現技巧，是把關係從人情換成承諾。</p>
+      </div>
+      <div class="row">
+        <span class="lb">你可以這樣拍</span>
+        <p>先重演一段收不了錢的尷尬對話，拆解卡住的那句話，最後給一句明天就能用的開場白。</p>
+      </div>
+      <div class="row quote">
+        <span class="lb">開場可以直接說</span>
+        <p>「我幫人看了三年盤，第一次開口收費那天，對方沉默了十秒。」</p>
+      </div>
+      <div class="row">
+        <span class="lb">和現有內容拉開差異</span>
+        <p>現有影片多在教「該收多少」，幾乎沒人拍「開口的那一刻」；留言區反覆出現「不好意思收朋友的錢」。</p>
+      </div>
+      <div class="row avoid">
+        <span class="lb">不要拍成</span>
+        <p>又一支「命理師行情大公開」。</p>
+      </div>
+      <details>
+        <summary>來源與限制</summary>
+        <p>依據 3 支影片與 14 則留言樣本｜線索完整度：中｜使用前先確認：留言樣本偏向新手命理師，若你的定位是資深老師，請先驗證再開拍。</p>
+      </details>
+    </article>
+
+    <p class="sample-note">每張卡都能展開<b>來源影片與留言依據</b>；另附一份<b>深化 Prompt</b>——複製給你慣用的 AI，補上你的專業與案例，接著發展成你的腳本。</p>
+  </div>
+</section>
+
+<!-- ============ 對照 ============ -->
+<section class="versus">
+  <div class="wrap">
+    <div class="brg">BRG 270°<b>／跟直接問 AI 差在哪</b></div>
+    <h2>「這我問 ChatGPT 不就好了？」</h2>
+    <div class="vs-grid">
+      <div class="vs-col vs-them">
+        <h3>直接問 AI</h3>
+        <ul>
+          <li>給你「聽起來合理」的題目</li>
+          <li>說這題很熱門，但拿不出是哪一支影片</li>
+          <li>切角來自模型印象，無從驗證，也可能過時</li>
+        </ul>
+      </div>
+      <div class="vs-col vs-us">
+        <h3>切角雷達</h3>
+        <ul>
+          <li>給你「查得到證據」的題目</li>
+          <li>每張卡附實際影片來源與留言依據，點開就能驗證</li>
+          <li>需求、供給、留言三層證據，至少兩層同時支持才成卡</li>
+        </ul>
+      </div>
+    </div>
+    <p class="vs-tail">雷達不是要取代你的 AI 工作流——每張卡都附<b>深化 Prompt</b>，把查證過的切角與證據，餵給你自己的 AI 繼續發展。</p>
+  </div>
+</section>
+
+<!-- ============ 定價 ============ -->
+<section class="pricing">
+  <div class="wrap">
+    <div class="brg">BRG 315°<b>／收費方式</b></div>
+    <h2>一個月，少熬好幾個選題的夜</h2>
+    <div class="price-card">
+      <div class="price-num">
+        <div class="amt">NT$500<small>／月</small></div>
+        <!-- TODO: 每月分析次數為暫定值，依單次成本確認後更新 -->
+        <div class="quota">含每月 10 次完整分析</div>
+        <div class="note">＊方案與額度為內測暫定，以正式公告為準</div>
+      </div>
+      <div class="price-inc">
+        <h3>每次分析，你會拿到</h3>
+        <ul>
+          <li>4–6 張切角行動卡：選題、核心訊息、建議拍法、可照念的開場、差異化提醒與避雷</li>
+          <li>值得研究的國內外影片清單——附連結，以及各自還沒做到的缺口</li>
+          <li>每張卡專屬的深化 Prompt，帶回你慣用的 AI 繼續發展成腳本</li>
+        </ul>
+      </div>
+      <div class="price-cta">
+        <a class="btn btn-amber" href="#cta">先拿試用碼，免費體驗一次</a>
+        <span class="hint">內測期間邀請制，先試用再決定。</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FAQ ============ -->
+<section class="faq">
+  <div class="wrap">
+    <div class="brg">FAQ<b>／常見問題</b></div>
+    <h2>你可能想問</h2>
+    <details>
+      <summary>跟自己問 ChatGPT，到底差在哪？</summary>
+      <p>ChatGPT 的答案來自模型的印象；切角雷達的答案來自<b>當下實際搜尋到的影片、字幕與留言</b>。更重要的是每個結論都留著來源——你可以自己點開影片和留言驗證，而不是選擇相信。</p>
+    </details>
+    <details>
+      <summary>我是哪種創作者，適合用嗎？</summary>
+      <p>只要你的內容有明確主題就適用。<b>知識型、技能型、利基題材</b>（命理、理財、健身、教學、職人⋯）受益最大，因為這些領域的缺口，往往藏在留言區的追問和海外還沒被中文圈做好的內容裡。</p>
+    </details>
+    <details>
+      <summary>找國外影片給我參考，是要我搬運嗎？</summary>
+      <p>雷達找的是「中文圈還沒做好的缺口」，來源清單是給你<b>研究與對照</b>用的。每張卡都有「和現有內容拉開差異」與「不要拍成」欄位——目標是做出更好的版本，不是複製別人的版本。</p>
+    </details>
+    <details>
+      <summary>一次分析要等多久？</summary>
+      <p>幾分鐘。這段時間雷達會實際執行數十次搜尋、讀完字幕與留言樣本——大約是你自己看半支影片的時間。</p>
+    </details>
+  </div>
+</section>
+
+<!-- ============ 結尾 CTA ============ -->
+<section class="final" id="cta">
+  <div class="wrap">
+    <h2>選題的事，交給<em>切角雷達</em></h2>
+    <p>把爆肝看片的夜晚，留給拍片。</p>
+    <div class="cta-row">
+      <!-- TODO: 換成試用碼申請表單／LINE／IG 私訊連結 -->
+      <a class="btn btn-amber" href="#">索取試用碼</a>
+    </div>
+    <p class="tiny">INVITE-ONLY BETA · 試用碼由站主發放</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>切角雷達 ANGLE RADAR</span>
+    <span>給影音創作者的選題研究工具</span>
+  </div>
+</footer>
+
+</body>
+</html>
