@@ -7,8 +7,8 @@
  *
  * 端點（GET 或 POST，帶 ?key=API_KEY）：
  *   action=check   ：查詢，不扣次數（登入＋顯示剩餘用）
- *   action=consume ：原子扣 1（remaining>0 才扣得動；否則回 depleted）
- *   action=refund  ：加 1（點單失敗時退還）
+ *   action=consume ：以 request_id 冪等地原子扣 1
+ *   action=refund  ：同 request_id 最多退還一次，且必須已有 consume
  *   action=feedback：記錄切角新穎度與可用性回饋
  *   action=log_usage：記錄每次分析的輸入、輸出、狀態與時間
  *   action=track_event：記錄收藏、複製 Prompt 與下載等最終行為
@@ -28,6 +28,7 @@ function handle_(e) {
 
   const action = p.action || 'check';
   const code = String(p.code || '').trim();
+  const requestId = String(p.request_id || '').trim();
   if (!code) return json_({ ok: false, error: 'no_code' });
 
   const lock = LockService.getScriptLock();
@@ -59,14 +60,27 @@ function handle_(e) {
           return json_({ ok: true });
         }
         if (action === 'consume') {
+          if (!requestId) return json_({ ok: false, error: 'no_request_id' });
+          if (quotaTransactionExists_(code, requestId, 'consume')) {
+            return json_({ ok: true, name: name, remaining: remaining, deep: deep, replay: true });
+          }
           if (remaining <= 0) return json_({ ok: false, error: 'depleted', name: name, remaining: 0, deep: deep });
           remaining -= 1;
           sh.getRange(i + 1, ri + 1).setValue(remaining);
+          appendQuotaTransaction_(code, requestId, 'consume', -1, remaining);
           return json_({ ok: true, name: name, remaining: remaining, deep: deep });
         }
         if (action === 'refund') {
+          if (!requestId) return json_({ ok: false, error: 'no_request_id' });
+          if (quotaTransactionExists_(code, requestId, 'refund')) {
+            return json_({ ok: true, name: name, remaining: remaining, deep: deep, replay: true });
+          }
+          if (!quotaTransactionExists_(code, requestId, 'consume')) {
+            return json_({ ok: false, error: 'not_consumed' });
+          }
           remaining += 1;
           sh.getRange(i + 1, ri + 1).setValue(remaining);
+          appendQuotaTransaction_(code, requestId, 'refund', 1, remaining);
           return json_({ ok: true, name: name, remaining: remaining, deep: deep });
         }
         // check：找到就回 found:true（即使 remaining=0 也讓他登入看到 0）
@@ -77,6 +91,37 @@ function handle_(e) {
   } finally {
     lock.releaseLock();
   }
+}
+
+function quotaTransactionsSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName('quota_transactions');
+  if (!sh) {
+    sh = ss.insertSheet('quota_transactions');
+    sh.appendRow(['timestamp', 'request_id', 'code', 'action', 'delta', 'remaining']);
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+function quotaTransactionExists_(code, requestId, action) {
+  const sh = quotaTransactionsSheet_();
+  const data = sh.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (
+      String(data[i][1]) === requestId &&
+      String(data[i][2]) === code &&
+      String(data[i][3]) === action
+    ) return true;
+  }
+  return false;
+}
+
+function appendQuotaTransaction_(code, requestId, action, delta, remaining) {
+  quotaTransactionsSheet_().appendRow([
+    new Date(), safeCell_(requestId), safeCell_(code), safeCell_(action),
+    Number(delta), Number(remaining)
+  ]);
 }
 
 function safeCell_(value, maxLength) {

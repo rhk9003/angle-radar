@@ -104,6 +104,19 @@ class UsageTests(unittest.TestCase):
         self.assertAlmostEqual(cost["total_usd"], expected_usd, places=6)
         self.assertAlmostEqual(cost["total_twd"], expected_usd * 32, places=2)
 
+    def test_usage_ledger_uses_modality_aware_audio_price(self):
+        ledger = UsageLedger()
+        ledger.record("video", "gemini-3.1-flash-lite", FakeVideoUsage())
+        expected_usd = (
+            10_200 * 0.25 + 3_200 * 0.50 + 400 * 1.50
+        ) / 1_000_000
+
+        self.assertAlmostEqual(
+            ledger.summary(usd_to_twd=32)["estimated_usd"],
+            expected_usd,
+            places=6,
+        )
+
     def test_route_classifier_distinguishes_reported_media_from_cc_like_input(self):
         media = classify_youtube_input_route(
             prompt_tokens=13_400,
@@ -150,6 +163,36 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(result["count_tokens"], 12_345)
         self.assertEqual(result["analysis"], {"spoken_summary": "摘要"})
         models.count_tokens.assert_called_once()
+        models.generate_content.assert_called_once()
+        self.assertTrue(client._config.call_args.kwargs["media_resolution_low"])
+        self.assertEqual(len(client._ledger.records()), 1)
+
+    def test_video_evidence_generation_calls_provider_exactly_once(self):
+        models = Mock()
+        models.generate_content.return_value = SimpleNamespace(
+            parsed={"video_id": "abcdefghijk", "confidence": "high"},
+            usage_metadata=FakeVideoUsage(),
+            text="",
+        )
+        client = object.__new__(GeminiClient)
+        client._client = SimpleNamespace(models=models)
+        client._types = SimpleNamespace(
+            FileData=lambda **kwargs: {"file_data": kwargs},
+            Part=lambda **kwargs: {"part": kwargs},
+            Content=lambda **kwargs: {"content": kwargs},
+        )
+        client._ledger = UsageLedger()
+        client._config = Mock(return_value={"media_resolution": "low"})
+
+        result = client.generate_youtube_json_once(
+            stage="影片內容證據",
+            youtube_url="https://www.youtube.com/watch?v=abcdefghijk",
+            model="gemini-3.1-flash-lite",
+            prompt="只回結構化證據",
+            schema={"type": "object"},
+        )
+
+        self.assertEqual(result["video_id"], "abcdefghijk")
         models.generate_content.assert_called_once()
         self.assertTrue(client._config.call_args.kwargs["media_resolution_low"])
         self.assertEqual(len(client._ledger.records()), 1)

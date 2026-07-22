@@ -524,78 +524,6 @@ def pick_videos_diverse(
     return selected[:k]
 
 
-def format_timestamp(seconds: float) -> str:
-    total = max(int(seconds or 0), 0)
-    return f"{total // 60:02d}:{total % 60:02d}"
-
-
-def build_transcript_evidence(
-    segments: list[dict[str, Any]], max_chars: int = 3_200
-) -> str:
-    """保留 Hook、等距中段與結尾，輸出帶時間碼的精簡證據。"""
-    clean_segments = [
-        {
-            "start": float(segment.get("start", 0) or 0),
-            "text": re.sub(r"\s+", " ", str(segment.get("text", ""))).strip(),
-        }
-        for segment in segments
-        if str(segment.get("text", "")).strip()
-    ]
-    if not clean_segments:
-        return ""
-
-    all_lines = [
-        f"[{format_timestamp(item['start'])}] {item['text']}" for item in clean_segments
-    ]
-    if len("\n".join(all_lines)) <= max_chars:
-        return "\n".join(all_lines)
-
-    last_start = clean_segments[-1]["start"]
-    selected_indices = {
-        index
-        for index, item in enumerate(clean_segments)
-        if item["start"] <= min(45, last_start)
-    }
-    selected_indices.update(
-        index
-        for index, item in enumerate(clean_segments)
-        if item["start"] >= max(last_start - 60, 0)
-    )
-    for fraction in (0.2, 0.4, 0.6, 0.8):
-        target = last_start * fraction
-        closest = min(
-            range(len(clean_segments)),
-            key=lambda idx: abs(clean_segments[idx]["start"] - target),
-        )
-        selected_indices.update(
-            range(max(0, closest - 1), min(len(clean_segments), closest + 2))
-        )
-
-    prioritized = sorted(
-        selected_indices,
-        key=lambda index: (
-            0
-            if clean_segments[index]["start"] <= 45
-            else 1
-            if clean_segments[index]["start"] >= last_start - 60
-            else 2,
-            clean_segments[index]["start"],
-        ),
-    )
-    kept: list[int] = []
-    used = 0
-    for index in prioritized:
-        line = f"[{format_timestamp(clean_segments[index]['start'])}] {clean_segments[index]['text']}"
-        if used + len(line) + 1 > max_chars:
-            continue
-        kept.append(index)
-        used += len(line) + 1
-    return "\n".join(
-        f"[{format_timestamp(clean_segments[index]['start'])}] {clean_segments[index]['text']}"
-        for index in sorted(set(kept))
-    )
-
-
 def compress_comments(
     comments: list[dict[str, Any]], limit: int = 12, max_chars_each: int = 180
 ) -> list[dict[str, Any]]:
@@ -798,43 +726,84 @@ def validate_reflow_selection(
     return selected
 
 
-def pick_evidence_ready_videos(
+def pick_budgeted_video_evidence(
     candidates: list[dict[str, Any]],
-    transcripts: dict[str, list[dict[str, Any]]],
     comments: dict[str, list[dict[str, Any]]],
     k: int,
-) -> list[dict[str, Any]]:
-    """優先選到真的有字幕或足量留言的影片，資料缺漏時以候選自動補位。"""
+    *,
+    max_total_minutes: float = 60,
+    max_single_minutes: float = 30,
+) -> dict[str, Any]:
+    """在來源多樣性與影片成本間取捨；超出預算的來源保留為 metadata fallback。"""
     indexed = {
         str(video.get("id", "")): index for index, video in enumerate(candidates)
     }
 
     def score(video: dict[str, Any]) -> tuple[float, float]:
         video_id = str(video.get("id", ""))
-        transcript_n = len(transcripts.get(video_id, []))
         comment_n = len(comments.get(video_id, []))
         readiness = (
             (8 if video.get("is_reference") else 0)
-            + (5 if transcript_n else 0)
             + min(comment_n, 12) / 4
-            + (1 if transcript_n and comment_n >= 3 else 0)
         )
         return readiness, float(video.get("evidence_score", 0) or 0) - indexed.get(
             video_id, 0
         ) / 100
 
-    ready = [
-        video
-        for video in candidates
-        if video.get("is_reference")
-        or transcripts.get(str(video.get("id", "")))
-        or len(comments.get(str(video.get("id", "")), [])) >= 3
-    ]
-    fallback = [video for video in candidates if video not in ready]
-    return [
-        *sorted(ready, key=score, reverse=True),
-        *sorted(fallback, key=score, reverse=True),
-    ][:k]
+    ranked = sorted(candidates, key=score, reverse=True)
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+    video_input_ids: list[str] = []
+    total_minutes = 0.0
+
+    def add(video: dict[str, Any], *, allow_video: bool) -> None:
+        nonlocal total_minutes
+        video_id = str(video.get("id", ""))
+        if not video_id or video_id in selected_ids or len(selected) >= max(k, 0):
+            return
+        duration = max(float(video.get("duration_min", 0) or 0), 0.0)
+        video_enabled = bool(
+            allow_video
+            and duration > 0
+            and duration <= max_single_minutes
+            and total_minutes + duration <= max_total_minutes
+        )
+        selected_video = dict(video)
+        selected_video["video_content_enabled"] = video_enabled
+        selected.append(selected_video)
+        selected_ids.add(video_id)
+        if video_enabled:
+            video_input_ids.append(video_id)
+            total_minutes += duration
+
+    # 使用者指定來源必須保留；過長時降級為 metadata/comments，而非突破成本上限。
+    for video in ranked:
+        if video.get("is_reference"):
+            add(video, allow_video=True)
+
+    # 優先把成本預算用在可完整容納的多樣來源，再用 fallback 補足比較樣本。
+    for video in ranked:
+        duration = max(float(video.get("duration_min", 0) or 0), 0.0)
+        if (
+            0 < duration <= max_single_minutes
+            and total_minutes + duration <= max_total_minutes
+        ):
+            add(video, allow_video=True)
+    for video in ranked:
+        add(video, allow_video=False)
+
+    return {
+        "videos": selected,
+        "video_input_ids": video_input_ids,
+        "fallback_ids": [
+            str(video.get("id", ""))
+            for video in selected
+            if not video.get("video_content_enabled")
+        ],
+        "total_video_minutes": round(total_minutes, 2),
+        "max_total_minutes": max_total_minutes,
+        "max_single_minutes": max_single_minutes,
+    }
 
 
 def market_coverage(videos: list[dict[str, Any]]) -> dict[str, Any]:
