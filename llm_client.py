@@ -18,6 +18,7 @@ MODEL_PRICING = {
     "gemini-3-flash-preview": {"input": 0.50, "output": 3.00, "cached": 0.05},
     "gemini-3.1-pro-preview": {"input": 2.00, "output": 12.00, "cached": 0.20},
     "gemini-2.5-flash": {"input": 0.30, "output": 2.50, "cached": 0.03},
+    "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40, "cached": 0.01},
     "gemini-2.5-pro": {"input": 1.25, "output": 10.00, "cached": 0.125},
 }
 
@@ -80,7 +81,9 @@ def _append_json_retry_instruction(contents: Any) -> Any:
     return [contents, instruction]
 
 
-def _minimum_thinking_level(model: str) -> str:
+def _retry_thinking_level(model: str) -> str | None:
+    if model == "gemini-2.5-flash-lite":
+        return None
     if model.startswith(("gemini-3.5-flash", "gemini-3-flash")):
         return "minimal"
     return "low"
@@ -305,7 +308,7 @@ class GeminiClient:
                         max(active_max_tokens + 2_048, int(active_max_tokens * 1.5)),
                         12_000,
                     )
-                    active_thinking = _minimum_thinking_level(model)
+                    active_thinking = _retry_thinking_level(model)
 
         raise RuntimeError(
             f"Gemini 未回傳合法 JSON（{stage}；結束原因：{last_finish_reason}）"

@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from radar_core import CONFIDENCE_LABEL, fmt_num
+from radar_core import CONFIDENCE_LABEL, fmt_num, text_similarity
 
 
 KEYWORD_PLAN_SCHEMA = {
@@ -1178,6 +1178,46 @@ def validate_angle_evidence(
         validated.append(angle)
     report["angles"] = validated
     return report
+
+
+def angle_report_needs_fallback(
+    report: dict[str, Any], min_angles: int = 4
+) -> bool:
+    """Detect reports that need a stronger model before they reach the user."""
+    angles = report.get("angles", [])
+    if len(angles) < min_angles:
+        return True
+
+    required_text = (
+        "angle_name",
+        "you_can_make",
+        "core_message",
+        "how_to_make",
+        "opening_line",
+        "why_worth_making",
+        "differentiation",
+        "avoid",
+    )
+    fingerprints: list[str] = []
+    supported = 0
+    for angle in angles:
+        if any(not _plain_text(angle.get(field, "")) for field in required_text):
+            return True
+        if angle.get("evidence_insight_ids") and angle.get("evidence_video_ids"):
+            supported += 1
+
+        fingerprint = " ".join(
+            _plain_text(angle.get(field, ""))
+            for field in ("you_can_make", "core_message")
+        )
+        if any(
+            text_similarity(fingerprint, existing) >= 0.78
+            for existing in fingerprints
+        ):
+            return True
+        fingerprints.append(fingerprint)
+
+    return supported < min_angles
 
 
 def _source_line(video: dict[str, Any]) -> str:

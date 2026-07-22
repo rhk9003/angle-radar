@@ -1,7 +1,13 @@
 import unittest
 from unittest.mock import Mock
 
-from llm_client import GeminiClient, UsageLedger, _parse_json_object
+from llm_client import (
+    MODEL_PRICING,
+    GeminiClient,
+    UsageLedger,
+    _parse_json_object,
+    _retry_thinking_level,
+)
 
 
 class FakeUsage:
@@ -13,6 +19,13 @@ class FakeUsage:
 
 
 class UsageTests(unittest.TestCase):
+    def test_mechanical_model_uses_lowest_pricing_and_no_retry_thinking(self):
+        pricing = MODEL_PRICING["gemini-2.5-flash-lite"]
+
+        self.assertEqual(pricing["input"], 0.10)
+        self.assertEqual(pricing["output"], 0.40)
+        self.assertIsNone(_retry_thinking_level("gemini-2.5-flash-lite"))
+
     def test_generate_retries_generic_invalid_argument_without_thinking(self):
         response = type("Response", (), {"usage_metadata": {}})()
         models = Mock()
