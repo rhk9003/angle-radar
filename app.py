@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import logging
 import time
 from datetime import datetime
@@ -12,6 +13,7 @@ from uuid import uuid4
 import pandas as pd
 import requests
 import streamlit as st
+from st_copy import copy_button
 
 from cache_store import JsonTTLCache
 from llm_client import GeminiClient, UsageLedger
@@ -47,7 +49,8 @@ from reporting import (
     keyword_plan_prompt,
     relevance_prompt,
     render_angle_report,
-    render_action_card,
+    render_action_card_details,
+    render_action_card_preview,
     render_action_evidence,
     render_breakdown,
     research_synthesis_prompt,
@@ -161,6 +164,44 @@ def _log_whitelist_usage(
     if not response.get("ok"):
         LOGGER.warning(
             "Could not save whitelist usage log for request %s: %s",
+            request_id,
+            response.get("error", "unknown_error"),
+        )
+        return False
+    return True
+
+
+def _track_whitelist_event(
+    *,
+    request_id: str,
+    event_type: str,
+    topic: str,
+    angle_key: str = "",
+    angle_index: int | None = None,
+    angle_name: str = "",
+    details: str = "",
+) -> bool:
+    """Best-effort interaction event linked to the originating analysis."""
+    code = st.session_state.get("_wl_code", "")
+    if not _wl_enabled() or not code:
+        return True
+    response = _wl_api(
+        "track_event",
+        code,
+        {
+            "request_id": request_id,
+            "event_type": event_type,
+            "topic": topic,
+            "angle_key": angle_key,
+            "angle_index": str(angle_index or ""),
+            "angle_name": angle_name,
+            "details": details,
+        },
+    )
+    if not response.get("ok"):
+        LOGGER.warning(
+            "Could not save whitelist event %s for request %s: %s",
+            event_type,
             request_id,
             response.get("error", "unknown_error"),
         )
@@ -1027,6 +1068,7 @@ if run_clicked:
                 pipeline_result = run_pipeline(
                     config, topic.strip(), exclusions.strip(), references.strip()
                 )
+                pipeline_result["request_id"] = usage_request_id
                 st.session_state["radar_result"] = pipeline_result
                 _log_whitelist_usage(
                     code=code,
@@ -1087,36 +1129,128 @@ if "radar_result" in st.session_state:
             )
     st.markdown(f"# 「{result['topic']}」可以怎麼拍")
     st.markdown(result["angle_report"].get("radar_summary", ""))
-    for index, angle in enumerate(result["angle_report"].get("angles", []), start=1):
-        with st.container(border=True):
-            st.markdown(render_action_card(angle, index))
-            with st.expander("查看來源與限制"):
-                st.markdown(render_action_evidence(angle, result["pool"]))
+    angles = result["angle_report"].get("angles", [])
+    request_id = str(
+        result.get("request_id")
+        or stable_hash([result.get("created_at", ""), result.get("topic", "")])
+    )
+    favorite_state = st.session_state.setdefault("_favorite_angles", {})
+    favorite_keys = set(favorite_state.get(request_id, []))
+    angle_rows = []
+    for index, angle in enumerate(angles, start=1):
+        if index % 2 == 1:
+            card_columns = st.columns(2, gap="medium")
+        name = str(angle.get("angle_name", "未命名切角"))
+        angle_key = stable_hash([request_id, index, name])[:16]
+        angle_rows.append((index - 1, angle_key, name))
+        is_favorite = angle_key in favorite_keys
+        prompt = angle_development_prompt(result["topic"], angle, result["pool"])
+        with card_columns[(index - 1) % len(card_columns)]:
+            with st.container(border=True):
+                st.markdown(render_action_card_preview(angle, index))
+                with st.expander("完整做法與來源"):
+                    st.markdown(render_action_card_details(angle))
+                    st.markdown("**來源與限制**")
+                    st.markdown(render_action_evidence(angle, result["pool"]))
+                with st.expander("Prompt"):
+                    st.text_area(
+                        "Prompt",
+                        prompt,
+                        height=240,
+                        disabled=True,
+                        label_visibility="collapsed",
+                        key=f"prompt_text_{request_id}_{angle_key}",
+                    )
+                actions = st.container(horizontal=True)
+                with actions:
+                    favorite_clicked = st.button(
+                        "已收藏" if is_favorite else "收藏",
+                        icon=(
+                            ":material/bookmark_added:"
+                            if is_favorite
+                            else ":material/bookmark:"
+                        ),
+                        key=f"favorite_{request_id}_{angle_key}",
+                    )
+                    copied = copy_button(
+                        prompt,
+                        icon="st",
+                        tooltip="複製 Prompt",
+                        copied_label="已複製",
+                        key=f"copy_prompt_{request_id}_{angle_key}",
+                    )
+                if favorite_clicked:
+                    if is_favorite:
+                        favorite_keys.discard(angle_key)
+                        event_type = "favorite_removed"
+                    else:
+                        favorite_keys.add(angle_key)
+                        event_type = "favorite_added"
+                    favorite_state[request_id] = sorted(favorite_keys)
+                    _track_whitelist_event(
+                        request_id=request_id,
+                        event_type=event_type,
+                        topic=result["topic"],
+                        angle_key=angle_key,
+                        angle_index=index,
+                        angle_name=name,
+                    )
+                    st.rerun()
+                if copied:
+                    _track_whitelist_event(
+                        request_id=request_id,
+                        event_type="prompt_copied",
+                        topic=result["topic"],
+                        angle_key=angle_key,
+                        angle_index=index,
+                        angle_name=name,
+                    )
 
+    selected_rows = [row for row in angle_rows if row[1] in favorite_keys]
     st.markdown("---")
-    st.markdown("# 把切角交給你的 AI")
-    st.caption("展開想做的切角，複製 Prompt，再補上你的專業、案例與拍攝限制。")
-    for index, angle in enumerate(result["angle_report"].get("angles", []), start=1):
-        name = angle.get("angle_name", "未命名切角")
-        with st.expander(f"{index}. {name}"):
-            st.code(
-                angle_development_prompt(result["topic"], angle, result["pool"]),
-                language="text",
+    st.markdown("## 我的收藏")
+    st.caption(f"已收藏 {len(selected_rows)} 張切角卡")
+    if selected_rows:
+        selected_indexes = [row[0] for row in selected_rows]
+        export = build_public_export(
+            result["report"],
+            result["angle_report"],
+            result["pool"],
+            result["created_at"],
+            result["topic"],
+            selected_angle_indexes=selected_indexes,
+        )
+        downloaded = st.download_button(
+            f"下載 {len(selected_rows)} 張收藏卡",
+            export,
+            file_name=f"切角雷達_收藏_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+            mime="text/markdown",
+            icon=":material/download:",
+            width="stretch",
+        )
+        if downloaded:
+            _track_whitelist_event(
+                request_id=request_id,
+                event_type="favorites_downloaded",
+                topic=result["topic"],
+                details=json.dumps(
+                    {
+                        "count": len(selected_rows),
+                        "angles": [
+                            {"angle_key": row[1], "angle_name": row[2]}
+                            for row in selected_rows
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
             )
-
-    export = build_public_export(
-        result["report"],
-        result["angle_report"],
-        result["pool"],
-        result["created_at"],
-        result["topic"],
-    )
-    st.download_button(
-        "下載切角、Prompt 與引用來源",
-        export,
-        file_name=f"切角雷達_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
-        mime="text/markdown",
-    )
+    else:
+        st.button(
+            "尚未收藏切角",
+            disabled=True,
+            icon=":material/download:",
+            width="stretch",
+        )
 
     with st.container(border=True):
         st.markdown("#### 這批切角對你有幫助嗎？")
