@@ -71,13 +71,19 @@ def _finish_reason(response: Any) -> str:
 def _append_json_retry_instruction(contents: Any) -> Any:
     instruction = (
         "上一次回覆無法完整解析。請縮短每個文字欄位，嚴格依指定格式輸出完整 JSON；"
-        "只能輸出 JSON，並優先確保所有括號閉合。"
+        "每個文字欄位最多 100 個中文字，只能輸出 JSON，並優先確保所有括號閉合。"
     )
     if isinstance(contents, str):
         return f"{contents}\n\n{instruction}"
     if isinstance(contents, list):
         return [*contents, {"text": instruction}]
     return [contents, instruction]
+
+
+def _minimum_thinking_level(model: str) -> str:
+    if model.startswith(("gemini-3.5-flash", "gemini-3-flash")):
+        return "minimal"
+    return "low"
 
 
 class UsageLedger:
@@ -299,7 +305,7 @@ class GeminiClient:
                         max(active_max_tokens + 2_048, int(active_max_tokens * 1.5)),
                         12_000,
                     )
-                    active_thinking = "low"
+                    active_thinking = _minimum_thinking_level(model)
 
         raise RuntimeError(
             f"Gemini 未回傳合法 JSON（{stage}；結束原因：{last_finish_reason}）"

@@ -896,8 +896,8 @@ def run_pipeline(
                 references,
             ),
             schema=ANGLE_REPORT_SCHEMA,
-            max_output_tokens=5_200,
-            thinking_level="medium",
+            max_output_tokens=8_000,
+            thinking_level="low",
             temperature=0.3,
         )
         angle_report["angles"] = angle_report.get("angles", [])[

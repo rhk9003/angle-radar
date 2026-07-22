@@ -81,6 +81,47 @@ class UsageTests(unittest.TestCase):
         self.assertGreater(retry["max_output_tokens"], 1_000)
         self.assertEqual(retry["thinking_level"], "low")
 
+    def test_max_tokens_retry_uses_minimal_thinking_and_full_budget(self):
+        finish_reason = type("FinishReason", (), {"name": "MAX_TOKENS"})()
+        candidate = type("Candidate", (), {"finish_reason": finish_reason})()
+        client = object.__new__(GeminiClient)
+        client._generate = Mock(
+            side_effect=[
+                type(
+                    "Response",
+                    (),
+                    {
+                        "parsed": None,
+                        "text": '{"angles":[',
+                        "candidates": [candidate],
+                    },
+                )(),
+                type(
+                    "Response",
+                    (),
+                    {
+                        "parsed": None,
+                        "text": '{"angles":[]}',
+                        "candidates": [],
+                    },
+                )(),
+            ]
+        )
+
+        result = client.generate_json(
+            stage="切角雷達生成",
+            model="gemini-3.5-flash",
+            prompt="make cards",
+            schema={"type": "object"},
+            max_output_tokens=8_000,
+            thinking_level="low",
+        )
+
+        self.assertEqual(result, {"angles": []})
+        retry = client._generate.call_args_list[1].kwargs
+        self.assertEqual(retry["max_output_tokens"], 12_000)
+        self.assertEqual(retry["thinking_level"], "minimal")
+
     def test_generate_json_can_parse_prompt_only_json_without_schema(self):
         client = object.__new__(GeminiClient)
         client._generate = Mock(
